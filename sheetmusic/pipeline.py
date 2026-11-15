@@ -172,7 +172,8 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
         has_vocals = False
     _log(opts, f"  {'vocals detected' if has_vocals else 'no vocals: instrumental transcription'}"
                + (f" (timbre var {vinfo['timbre_var']}, wobble {vinfo['wobble']}, "
-                  f"movement {vinfo['fluct']})" if vinfo else ""))
+                  f"movement {vinfo['fluct']}, centre {vinfo['centre']}, range {vinfo['range']})"
+                  if vinfo else ""))
     instrumental = not has_vocals
     if instrumental:
         # everything goes into the piano score; nothing is removed as "voice"
