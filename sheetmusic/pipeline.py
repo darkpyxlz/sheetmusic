@@ -65,6 +65,18 @@ class Transcription:
     melody_track: melody.MelodyTrack | None = None
     melody_raw: list[Note] = field(default_factory=list)
     accomp_raw: list[Note] = field(default_factory=list)
+    beat_map: rhythm.BeatMap | None = None   # notated beats <-> seconds
+    beat_offset: float = 0.0                 # beats added so bar 1 starts at tick 0
+
+    def ticks_to_seconds(self, ticks):
+        """Audio time of a score position (inverse of the quantiser's mapping)."""
+        bm = self.beat_map
+        b = np.asarray(ticks, float) / self.score.beat_ticks - self.beat_offset
+        bt = bm.beat_times
+        i = np.arange(bt.size, dtype=float)
+        s = np.interp(b, i, bt)
+        s = np.where(b < 0, bt[0] + b * bm.period, s)
+        return np.where(b > i[-1], bt[-1] + (b - i[-1]) * bm.period, s)
 
 
 def _log(opts, *a):
@@ -305,7 +317,7 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                 seconds=time.time() - t0)
     _log(opts, f"Done in {info['seconds']:.1f} s: {len(mel_q)} melody notes, "
                f"{len(acc_q)} accompaniment notes")
-    return Transcription(score, mel_q, acc_q, info, track, mel_notes, acc_notes)
+    return Transcription(score, mel_q, acc_q, info, track, mel_notes, acc_notes, bm, offset)
 
 
 def _drop_weak_out_of_key(notes: list[QNote], fifths: int, mode: str, tpb: int) -> list[QNote]:
