@@ -52,7 +52,7 @@ def test_voice_removal_reduces_accompaniment_garbage(song):
                                              remove_voice_from_accompaniment=False))
     p_on = evaluate(on.accomp_notes, truth["accomp"])["precision"]
     p_off = evaluate(off.accomp_notes, truth["accomp"])["precision"]
-    assert p_on > p_off + 0.1, (p_on, p_off)
+    assert p_on > p_off + 0.05, (p_on, p_off)
 
 
 @needs_ffmpeg

@@ -39,12 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pdf", metavar="PATH",
                    help="also render a PDF (needs MuseScore installed: mscore/musescore)")
     g = p.add_argument_group("what to transcribe")
-    g.add_argument("--mode", choices=["vocal", "instrumental", "melody", "accompaniment"],
-                   default="vocal",
-                   help="vocal: voice staff + piano accompaniment with the voice removed "
-                        "(default); instrumental: lead line + piano, lead instrument "
-                        "named 'Melody'; melody: only the lead line; accompaniment: only "
-                        "the piano reduction")
+    g.add_argument("--mode", choices=["auto", "vocal", "instrumental", "melody",
+                                      "accompaniment"],
+                   default="auto",
+                   help="auto (default): detect whether the song has vocals; vocal: "
+                        "voice staff + piano accompaniment with the voice removed; "
+                        "instrumental: no vocals, everything transcribed into a piano "
+                        "score (slower, more accurate for instrumental music); melody: "
+                        "only the vocal line; accompaniment: only the piano part")
     g.add_argument("--separate", choices=["none", "demucs"], default="none",
                    help="source separation before transcription; 'demucs' uses the "
                         "optional Demucs neural separator (pip install demucs) for much "
@@ -73,7 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="MIDI pitch splitting piano treble/bass staves (default 60 = C4)")
     g = p.add_argument_group("notation")
     g.add_argument("--bpm", type=float, help="fixed tempo instead of beat tracking")
-    g.add_argument("--time-signature", type=_timesig, default=(4, 4), metavar="N/D")
+    g.add_argument("--time-signature", type=_timesig, default=None, metavar="N/D",
+                   help="force the time signature (2/4, 3/4, 4/4, 6/8, 9/8, 12/8); "
+                        "default: detected automatically")
     g.add_argument("--grid", type=int, choices=[1, 2, 4, 8, 16], default=8,
                    help="finest melody note value as subdivisions per beat (8 = "
                         "demisemiquavers/32nds, 4 = 16ths, 2 = quavers). Quantisation "
@@ -101,7 +105,9 @@ def main(argv=None) -> int:
         accomp_grid=args.accomp_grid, key=args.key, tuning=args.tuning,
         title=args.title, verbose=not args.quiet)
     if args.mode == "instrumental":
-        opts.melody_name, opts.melody_program = "Melody", 73
+        opts.vocals = False
+    elif args.mode == "vocal":
+        opts.vocals = True
     elif args.mode == "melody":
         opts.accompaniment = False
     elif args.mode == "accompaniment":
@@ -120,7 +126,8 @@ def main(argv=None) -> int:
             tracks.append((opts.melody_name, opts.melody_program, res.melody_notes))
         if opts.accompaniment:
             tracks.append(("Piano", 0, res.accomp_notes))
-        write_midi(args.midi, tracks, res.score.bpm, time_sig=opts.time_signature)
+        write_midi(args.midi, tracks, res.score.bpm * res.score.beat_ticks / 480,
+                   time_sig=(res.score.time_num, res.score.time_den))
         if not args.quiet:
             print(f"Wrote {args.midi}")
     if args.pdf:

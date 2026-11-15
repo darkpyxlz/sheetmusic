@@ -29,6 +29,8 @@ class Features:
     center: np.ndarray     # (T, K) magnitude weighted by L/R similarity (centre-panned)
     flux: np.ndarray       # (T,) full-band spectral flux (onset strength)
     flatness: np.ndarray   # (T,) spectral flatness of the mid signal (noise-likeness)
+    short: np.ndarray | None = None  # (T, Ks) magnitude with a 1024-sample window (timing)
+    short_nfft: int = 1024
 
     @property
     def fps(self) -> float:
@@ -72,6 +74,8 @@ def analyze(x: np.ndarray, sr: int, n_fft: int = 4096, hop: int = 256,
     fs = np.lib.stride_tricks.sliding_window_view(xm, ns)[pad - ns // 2::hop]
     wins = get_window("hann", ns).astype(np.float32)
 
+    ks = min(ns // 2 + 1, int(np.ceil(fmax * ns / sr)) + 2)
+    short = np.empty((n_frames, ks), np.float32)
     mono = np.empty((n_frames, kmax), np.float32)
     center = np.empty((n_frames, kmax), np.float32)
     flux = np.zeros(n_frames, np.float32)
@@ -92,7 +96,9 @@ def analyze(x: np.ndarray, sr: int, n_fft: int = 4096, hop: int = 256,
         blk = fs[s:e]
         if blk.shape[0] < e - s:
             blk = np.vstack([blk, np.zeros((e - s - blk.shape[0], ns), np.float32)])
-        lg = np.log1p(100.0 * np.abs(np.fft.rfft(blk * wins, axis=1))).astype(np.float32)
+        sm = np.abs(np.fft.rfft(blk * wins, axis=1)).astype(np.float32)
+        short[s:e] = sm[:, :ks]
+        lg = np.log1p(100.0 * sm)
         if prev is None:
             d = np.zeros_like(lg)
             d[1:] = np.diff(lg, axis=0)
@@ -104,7 +110,7 @@ def analyze(x: np.ndarray, sr: int, n_fft: int = 4096, hop: int = 256,
         lo = int(300 * n_fft / sr)
         band = aM[:, lo:kmax] + 1e-10
         flat[s:e] = np.exp(np.mean(np.log(band), axis=1)) / np.mean(band, axis=1)
-    return Features(sr, n_fft, hop, mono, center, flux, flat)
+    return Features(sr, n_fft, hop, mono, center, flux, flat, short, ns)
 
 
 def hpss_mask(mag: np.ndarray, time_size: int = 17, freq_size: int = 17,

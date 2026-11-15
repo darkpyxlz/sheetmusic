@@ -101,6 +101,8 @@ def test_spelling_and_keys():
     assert tpc_name(spell(66, 1)) == "F#"     # G major
     assert tpc_name(spell(70, -1)) == "Bb"    # F major
     assert tpc_name(spell(63, -3)) == "Eb"
+    assert tpc_name(spell(68, 0, minor=True)) == "G#"    # leading note of A minor
+    assert tpc_name(spell(61, -1, minor=True)) == "C#"   # leading note of D minor
     assert _parse_key("Eb") == (-3, "major")
     assert _parse_key("F#m") == (3, "minor")
     g_major = [QNote(i * 480, i * 480 + 480, p) for i, p in enumerate([67, 71, 74, 66, 69, 72, 67, 62, 59, 67])]

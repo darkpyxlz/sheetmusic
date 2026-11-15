@@ -159,13 +159,17 @@ def snap(b: float, grid: int, tol_coarse: float = 0.12) -> float:
     within ``tol`` of it, where ``tol`` shrinks with the subdivision; the
     finest grid always matches.  So a note sung 50 ms late still lands on the
     beat, while genuinely fast or off-beat notes get 16ths / 32nds."""
+    # grids tried coarsest first: 1, 2, 4, 8 ... or, for compound time
+    # (grid divisible by 3: beat = dotted crotchet), 1, 3, 6, 12 ...
     g = 1
+    step = 3 if grid % 3 == 0 else 2
     while g < grid:
         q = round(b * g) / g
-        tol = tol_coarse if g <= 2 else min(tol_coarse, 0.36 / g)
+        tol = tol_coarse if g <= 3 else min(tol_coarse, 0.36 / g)
         if abs(b - q) <= tol:
             return q
-        g *= 2
+        g *= step
+        step = 2
     return round(b * grid) / grid
 
 

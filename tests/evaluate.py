@@ -6,9 +6,11 @@ import numpy as np
 
 
 def _match(ref, est, onset_tol=0.26):
-    """ref/est: lists of (onset_beats, dur_beats, pitch). Greedy one-to-one match."""
+    """ref/est: lists of (onset_beats, dur_beats, pitch). Greedy one-to-one match.
+    Returns (precision, recall, f, mean absolute onset error of the matches)."""
     used = set()
     hits = 0
+    err_sum = 0.0
     for o, d, p in ref:
         best = None
         for j, (oe, de, pe) in enumerate(est):
@@ -20,20 +22,25 @@ def _match(ref, est, onset_tol=0.26):
         if best is not None:
             used.add(best[1])
             hits += 1
+            err_sum += best[0]
     prec = hits / len(est) if est else 0.0
     rec = hits / len(ref) if ref else 0.0
     f = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-    return prec, rec, f
+    return prec, rec, f, (err_sum / hits if hits else 1.0)
 
 
 def evaluate(qnotes, truth_notes, ticks_per_beat=480, max_shift_beats=8):
     est = [(q.start / ticks_per_beat, (q.end - q.start) / ticks_per_beat, q.pitch) for q in qnotes]
-    best = (-1, 0, None)
-    for shift in np.arange(-max_shift_beats, max_shift_beats + 0.01, 0.25):
+    best = ((-1, 0), 0, None)
+    # steps of 1/12 beat cover both duple (1/4) and compound (1/3) offsets
+    for shift in np.arange(-max_shift_beats, max_shift_beats + 0.01, 1 / 12):
         sh = [(o - shift, d, p) for o, d, p in est]
-        r = _match(truth_notes, sh)
-        if r[2] > best[0]:
-            best = (r[2], shift, r)
+        # compound beats (720 ticks) divide in thirds: keep the tolerance below
+        # half an eighth so neighbouring eighths cannot match each other
+        r = _match(truth_notes, sh, onset_tol=0.12 if ticks_per_beat % 720 == 0 else 0.26)
+        key = (round(r[2], 6), -r[3])     # best F, then the tightest alignment
+        if best[2] is None or key > best[0]:
+            best = (key, shift, r)
     return {"precision": best[2][0], "recall": best[2][1], "f": best[2][2], "shift": best[1]}
 
 
@@ -42,7 +49,7 @@ def rhythm_exactness(qnotes, truth_notes, shift, ticks_per_beat=480):
     and duration (best alignment within half a beat of ``shift``)."""
     ref = [(round(o, 4), round(d, 4), p) for o, d, p in truth_notes]
     best = {"onset_exact": 0.0, "onset_and_duration_exact": 0.0}
-    for sh in np.arange(shift - 0.5, shift + 0.51, 0.125):
+    for sh in np.arange(shift - 0.5, shift + 0.51, 1 / 24):
         est = {(round(q.start / ticks_per_beat - sh, 4),
                 round((q.end - q.start) / ticks_per_beat, 4), q.pitch) for q in qnotes}
         onsets = {(e[0], e[2]) for e in est}

@@ -2,15 +2,19 @@
 
 `sheetmusic` turns an MP3 (or any audio file ffmpeg can read) into a MuseScore score:
 
-* a **Voice / melody staff** with the sung (or lead) line, and
-* a **Piano grand staff** with the accompaniment (chords and bass),
+* **songs with vocals:** a **Voice staff** with the sung line plus a **Piano grand
+  staff** with the accompaniment (chords and bass);
+* **instrumental music:** everything transcribed into a **piano score**.
 
-with tempo, time signature, key signature, measures, ties and rests filled in. It also
-writes a MIDI file you can listen to, and a PDF if MuseScore is installed.
+Whether the song has vocals, the **time signature** (2/4, 3/4, 4/4, 6/8, 9/8, 12/8),
+the **tempo**, the **key** and **key signature** are all detected automatically. Measures,
+ties and rests are filled in. It also writes a MIDI file you can listen to, and a PDF
+if MuseScore is installed.
 
 It uses plain signal processing (numpy and scipy, plus ffmpeg for decoding), so there
-are no models to download and no GPU is needed. A 4-minute song takes about 40 s on a
-laptop CPU. Neural source separation (Demucs) is an optional extra.
+are no models to download and no GPU is needed. A 4-minute song with vocals takes
+about 40 s on a laptop CPU, an instrumental one about 80 s (it uses a slower, more
+accurate analysis). Neural source separation (Demucs) is an optional extra.
 
 ![example](examples/synthetic_song.png)
 
@@ -19,6 +23,12 @@ hard to transcribe on purpose: a weak fundamental, vowel formants that change on
 every note, vibrato, pitch scoops into each note, and consonant noise. Behind it are
 piano chords that double the voice an octave lower, plus bass and drums. The voice
 line comes out note-for-note correct.*
+
+![instrumental example](examples/instrumental_waltz.png)
+
+*An instrumental piano waltz (`tests/synth_instr.py`). The program detected on its
+own that there are no vocals, that it is in 3/4 at 133 BPM, and that it is in
+F major, then transcribed it as a piano score.*
 
 ## Install
 
@@ -35,12 +45,21 @@ You can also `pip install .`, which adds an `mp3-to-mscz` command.
 ## Use
 
 ```bash
-python -m sheetmusic song.mp3                       # -> song.mscz
+python -m sheetmusic song.mp3                       # -> song.mscz, everything automatic
 python -m sheetmusic song.mp3 -o out.mscz --midi out.mid --pdf out.pdf
 python -m sheetmusic song.mp3 --mode melody         # only the vocal line
-python -m sheetmusic song.mp3 --mode instrumental   # lead line called "Melody" + piano
+python -m sheetmusic song.mp3 --mode instrumental   # force "no vocals": full piano score
+python -m sheetmusic song.mp3 --mode vocal          # force "has vocals"
 python -m sheetmusic song.mp3 --separate demucs     # neural vocal separation first
-python -m sheetmusic song.mp3 --start 30 --duration 20 --bpm 92 --key Eb
+python -m sheetmusic song.mp3 --start 30 --duration 20 --bpm 92 --key Eb --time-signature 6/8
+```
+
+The program prints what it detected, e.g.
+
+```
+  no vocals: instrumental transcription (timbre var 0.27, wobble 24.4, movement 0.76)
+  time signature 6/8, tempo ~ 66.4 dotted-crotchets per minute, 50 beats
+  key: A minor
 ```
 
 Open the `.mscz` in **MuseScore 3 or 4**. The file uses the MuseScore 3.01 format,
@@ -50,14 +69,14 @@ Useful options (`python -m sheetmusic -h` lists them all):
 
 | option | meaning |
 |---|---|
-| `--mode vocal\|instrumental\|melody\|accompaniment` | which staves to write (default `vocal`) |
+| `--mode auto\|vocal\|instrumental\|melody\|accompaniment` | `auto` (default) detects vocals; the others force a choice or write only one part |
 | `--separate demucs` | use Demucs to split vocals/accompaniment before transcribing |
 | `--voicing 0.3` | lower it to get more (quieter) melody notes, raise it for fewer |
 | `--voice-strictness 0.72` | how strictly instrument notes (intro riffs, fills between vocal lines) are kept out of the voice staff; raise if you still see extra notes, lower if real sung notes go missing |
 | `--voice-range 45-86` | MIDI range searched for the melody (A2–D6; use `38-86` for a bass singer) |
 | `--poly-threshold 0.15` | accompaniment sensitivity (lower = more notes) |
 | `--polyphony 5` | max simultaneous accompaniment notes |
-| `--bpm`, `--time-signature 3/4`, `--key F#m`, `--tuning +20` | override what the program estimates |
+| `--bpm`, `--time-signature 6/8`, `--key F#m`, `--tuning +20` | override what the program detects (time signature, tempo, key and tuning are all automatic by default) |
 | `--grid 8`, `--accomp-grid 8` | finest note value as subdivisions per beat (8 = demisemiquavers / 32nds, 4 = 16ths, 2 = quavers). Quantisation is adaptive: each note snaps to the longest value that fits its timing, so 32nds only appear where the music really has them |
 | `--keep-voice-in-accompaniment` | don't remove the voice's harmonics from the piano part |
 
@@ -134,7 +153,39 @@ The program handles each of these:
   for scoops) or its first overtones are suppressed
   (`melody.vocal_harmonic_mask`, `poly.voice_exclusion`).
 
-### Accompaniment
+### Vocals or instrumental?
+
+The lead line found by the melody tracker is tested for three properties that tell
+a singer from a melodic instrument: its **timbre changes from note to note**
+(different vowels = different formants; a flute, violin or piano keeps its tone
+colour), its pitch **wobbles** slightly inside notes (keyboards and plucked strings
+are rock steady), and its partials keep **moving** (vibrato and intonation). Only
+when all three look like singing is the song treated as a vocal song
+(`melody.vocal_evidence`). Use `--mode vocal` / `--mode instrumental` to override.
+
+### Instrumental music
+
+Nothing is removed as "voice", and the notes come from **non-negative matrix
+factorisation with a fixed harmonic dictionary** (`poly.nmf_activations`). Every
+semitone has several harmonic templates (bright to dull timbres), and the spectrum
+is explained by all notes **jointly**. A partial shared by two notes, such as the
+bass note's 3rd harmonic coinciding with the chord's fifth (very common), is split
+between them instead of being swallowed by whichever note was found first. Overtone
+residue a twelfth or octave above a much stronger note is suppressed afterwards.
+
+For every note, attacks and releases are judged on that note's **own partials**:
+
+* **Repeated notes are split** when most of its partials jump up together in a short
+  (46 ms) analysis window, together with an onset in the mix. Vibrato wobble and a
+  neighbour's attack don't count.
+* **Note ends** come from a steep fall of its partials (key or string released), not
+  from waiting for the sound and room reverb to fade. Otherwise every quaver ends up
+  written as a crotchet.
+
+Partials that coincide with other notes sounding at the same time are left out of
+both decisions.
+
+### Accompaniment of vocal songs
 
 The program uses iterative multi-pitch estimation with spectral-smoothness
 cancellation (after Klapuri 2006). It finds the strongest harmonic series, records
@@ -151,17 +202,32 @@ the treble staff, the rest on the bass staff.
   autocorrelation, and beats from dynamic programming (Ellis 2007). The program
   maps time to beats through the tracked beats, so the score stays in time even
   when the tempo drifts.
-* Double or half tempo (e.g. locking onto hi-hat 8ths) is corrected using the
-  melody's rhythm. The downbeat is the beat phase with the strongest
-  onsets and bass-note starts.
+* **Time signature and downbeat** (`meter.py`): the tracked beats are divided into
+  six slots each (so both halves and thirds of a beat are on the grid). An *accent*
+  is measured in every slot from onsets, note starts (long notes and bass notes count
+  more) and harmonic change (chroma novelty: chords tend to change on the "1").
+  Every candidate meter (2/4, 3/4, 4/4, 6/8, 9/8, 12/8, each also with the beat
+  twice as long as the tracker's pulse) is then scored over all bars and every
+  possible downbeat position:
+  * do its downbeats stand out from the other positions in the bar?
+  * do its beats stand out from the off-beats?
+  * does the beat divide in two (simple time) or three (compound time)?
+  * does the tune move mostly in crotchets at that tempo (this settles "140 BPM
+    in crotchets" against "70 BPM in quavers")?
+  * is the tempo plausible (around 100 crotchets or 70 dotted crotchets per minute)?
+* Double or half tempo is thereby decided together with the meter.
 * Quantisation is adaptive down to demisemiquavers (32nds): each onset snaps to
   the coarsest grid (beat, half, quarter, eighth of a beat) it is close to, so a
   note sung slightly late still lands on the beat while genuinely fast notes keep
   their 16ths/32nds. Accompaniment onsets snap a little harder (strums and
   arpeggios smear them) and are at least a 16th long. Small gaps in the vocal
   line are closed (legato).
-* The key is estimated with Krumhansl–Kessler profiles. Accidentals are spelled for
-  that key (F♯ in G major, B♭ in F major …).
+* **Key**: the transcribed notes (bass counted double) and the spectrum's chroma are
+  correlated with Krumhansl–Kessler major/minor profiles. Relative keys (C major and
+  A minor) share their notes, so the tonic decides between them: the final bass note,
+  the last note, the first bass note and the most used bass notes. The key signature
+  follows, and accidentals are spelled for the key: F♯ in G major, B♭ in F major, and
+  the leading note G♯ in A minor.
 * `mscore.py` writes MuseScore XML directly, using as few ties as possible:
   a note is written as one value whenever one exists (syncopated crotchets,
   dotted notes, minims ...); ties remain only across barlines or for lengths no
@@ -175,14 +241,20 @@ the treble staff, the rest on the bass staff.
 Transcribing polyphonic music automatically is still an unsolved research problem.
 Expect a usable draft that you correct in MuseScore, not a finished engraving.
 
-On the synthetic test songs (`tests/`):
+On the synthetic test songs (`tests/`; the instrumental pieces are in
+`tests/synth_instr.py`):
 
-| | note F-measure |
-|---|---|
-| vocal melody, simple song (100/140/72 BPM, +35-cent detuning, low male voice, mono) | 0.96 – 1.00 |
-| vocal melody, "hard" song (`tests/synth_hard.py`: instrumental intro riff, reverb, slides, backing vocals, strummed guitar, snare, tempo drift) | 0.90 |
-| piano accompaniment, simple song | 0.63 – 0.75 |
-| piano accompaniment, hard song | ~0.5 (precision 0.73) |
+| | note F-measure | detected correctly |
+|---|---|---|
+| vocal melody, simple song (100/140/72 BPM, +35-cent detuning, low male voice, mono) | 0.96 – 1.00 | tempo, 4/4, key, vocals: all |
+| vocal melody, "hard" song (instrumental intro riff, reverb, slides, backing vocals, strummed guitar, snare, tempo drift) | 0.90 | all |
+| vocal melody, sung waltz (3/4) | 0.94 | all |
+| piano waltz, 3/4, F major (instrumental) | 0.98 | all |
+| solo piano, 4/4, D minor (instrumental) | 0.94 | all |
+| strings + piano + bass + drums, 4/4, Eb major (instrumental) | 0.77 | all |
+| flute + guitar arpeggios + bass, 6/8, A minor (instrumental) | 0.74 | all |
+| the four instrumental pieces transposed to 8 other keys | – | key, meter, tempo: 8/8 |
+| accompaniment of vocal songs | 0.6 – 0.75 | – |
 
 Real recordings are harder. Reverb, backing vocals, distorted guitars and dense
 mixes all lower accuracy. For those, `--separate demucs` helps the most. If the
@@ -196,7 +268,9 @@ Known limitations:
 * No triplets or swing: the grid is binary (1/2/4/8/16 subdivisions per beat).
 * No lyrics, dynamics or articulations.
 * Only one time signature and tempo marking for the whole piece; the beat map
-  follows tempo drift internally.
+  follows tempo drift internally. Odd meters (5/4, 7/8) are not detected.
+* Instrumental music is written as a piano reduction; individual instruments are
+  not separated into their own staves.
 
 ## Development
 
@@ -205,6 +279,7 @@ pip install pytest
 python -m pytest            # unit + end-to-end tests (needs ffmpeg; MuseScore optional)
 python tests/synth.py test.mp3   # regenerate the synthetic test song
 # tests/synth_hard.py: make_hard_song() builds the harder, pop-production-like one
+# tests/synth_instr.py: make_piece(name) builds the instrumental pieces (and a sung waltz)
 ```
 
 Layout:
@@ -213,9 +288,10 @@ Layout:
 sheetmusic/
   audio.py      decoding (ffmpeg / WAV fallback), optional Demucs separation
   spectral.py   STFT, centre extraction, HPSS, whitening, harmonic salience, tuning
-  melody.py     vocal f0 tracking, note segmentation, voice harmonic mask
-  poly.py       multi-pitch accompaniment transcription
-  rhythm.py     onsets, tempo, beat tracking, downbeat, quantisation
+  melody.py     vocal f0 tracking, note segmentation, voice harmonic mask, vocal detection
+  poly.py       multi-pitch transcription (iterative cancellation, harmonic NMF)
+  rhythm.py     onsets, tempo, beat tracking, quantisation
+  meter.py      time signature + downbeat detection
   keys.py       key estimation and pitch spelling
   mscore.py     .mscx / .mscz writer
   midi.py       MIDI writer

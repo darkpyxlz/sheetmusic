@@ -569,3 +569,49 @@ def vocal_harmonic_mask(n_frames: int, n_bins: int, df: float, f0: np.ndarray,
 
 __all__ = ["MelodyTrack", "track_melody", "segment_melody", "vocal_harmonic_mask",
            "hz_to_midi"]
+
+
+def vocal_evidence(track: MelodyTrack, notes: list[Note], spec: np.ndarray, df: float,
+                   fps: float, ref_hz: float = 440.0) -> dict:
+    """Is the tracked lead line a singing voice?
+
+    Three cues that separate singing from melodic instruments:
+
+    * ``timbre_var``: the harmonic amplitude pattern changes from note to note
+      (different vowels = different formants); an instrument's timbre is
+      nearly constant.
+    * ``wobble``: frame-to-frame pitch jitter inside notes (cents); keyboards
+      and plucked strings are rock steady.
+    * ``fluct``: share of the line's energy that keeps moving (vibrato,
+      intonation, see ``spectral.fluctuating_part``).
+    """
+    K = spec.shape[1]
+    env, wob = [], []
+    for n in notes:
+        a, b = int(n.start * fps), int(n.end * fps)
+        if b - a < 4:
+            continue
+        f0 = float(midi_to_hz(n.pitch, ref_hz))
+        hs = []
+        for h in range(1, 7):
+            k = int(round(h * f0 / df))
+            if k + 3 >= K:
+                break
+            hs.append(np.log(spec[a:b, max(0, k - 2):k + 3].max(axis=1).mean() + 1e-6))
+        if len(hs) == 6:
+            env.append(np.array(hs) - np.mean(hs))
+        m = track.midi[a:b]
+        m = m[~np.isnan(m)]
+        if m.size > 10:
+            wob.append(float(np.std(np.diff(m)) * 100))
+    v = track.voiced
+    fluct = 0.0
+    if track.fluct_salience is not None and v.any():
+        fluct = float(np.median(track.fluct_salience[v] / (track.salience[v] + 1e-9)))
+    timbre_var = float(np.mean(np.std(np.array(env), axis=0))) if len(env) >= 4 else 0.0
+    wobble = float(np.median(wob)) if wob else 0.0
+    cover = sum(n.end - n.start for n in notes) / max(1e-9, track.voiced.size / fps)
+    has = (len(notes) >= 6 and cover >= 0.08 and timbre_var >= 0.45 and wobble >= 6.0
+           and fluct >= 0.6)
+    return dict(has_vocals=bool(has), timbre_var=round(timbre_var, 3), wobble=round(wobble, 2),
+                fluct=round(fluct, 3), cover=round(cover, 3))

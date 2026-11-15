@@ -52,6 +52,7 @@ class ScoreSpec:
     time_num: int = 4
     time_den: int = 4
     bpm: float = 120.0
+    beat_ticks_override: int | None = None   # 720 for compound time (dotted crotchet beat)
     extra_meta: dict = field(default_factory=dict)
 
     @property
@@ -60,7 +61,7 @@ class ScoreSpec:
 
     @property
     def beat_ticks(self) -> int:
-        return WHOLE // self.time_den
+        return self.beat_ticks_override or WHOLE // self.time_den
 
 
 def split_duration(pos: int, length: int, measure: int, beat: int):
@@ -177,7 +178,7 @@ def _staff_events(notes: list[QNote], n_measures: int, mticks: int, bticks: int)
     return measures
 
 
-def _note_xml(pitch: int, key: int, tie_back: bool, tie_fwd: bool,
+def _note_xml(pitch: int, key: int | tuple, tie_back: bool, tie_fwd: bool,
               prev_tick: int, this_tick: int, next_tick: int, mticks: int,
               prev_dn: int = 0, next_dn: int = 0) -> str:
     x = ["<Note>"]
@@ -190,7 +191,8 @@ def _note_xml(pitch: int, key: int, tie_back: bool, tie_fwd: bool,
         x.append('<Spanner type="Tie"><prev>'
                  + _location(prev_tick - this_tick, mticks, this_tick, prev_dn)
                  + "</prev></Spanner>")
-    x.append(f"<pitch>{pitch}</pitch><tpc>{spell(pitch, key)}</tpc>")
+    k, minor = key if isinstance(key, tuple) else (key, False)
+    x.append(f"<pitch>{pitch}</pitch><tpc>{spell(pitch, k, minor)}</tpc>")
     x.append("</Note>")
     return "".join(x)
 
@@ -223,7 +225,8 @@ def _voice_measures_xml(measures, score: ScoreSpec, hidden_rests: bool) -> list[
                 before = pitch_index[k - 1] if k > 0 else {}
                 after = pitch_index[k + 1] if k + 1 < len(flat) else {}
                 notes_xml = "".join(
-                    _note_xml(p, score.key_fifths, tb, tf, prev_tick, tick, tick + dur, mt,
+                    _note_xml(p, (score.key_fifths, score.key_minor), tb, tf, prev_tick, tick,
+                              tick + dur, mt,
                               prev_dn=before.get(p, here[p]) - here[p],
                               next_dn=after.get(p, here[p]) - here[p])
                     for p, tb, tf, _v in nl)
@@ -255,11 +258,18 @@ def _staff_xml(staff_id: int, voices_measures, score: ScoreSpec, first_staff: bo
                        + "</KeySig>")
             out.append(f"<TimeSig><sigN>{score.time_num}</sigN><sigD>{score.time_den}</sigD></TimeSig>")
             if first_staff:
-                qps = score.bpm * (4.0 / score.time_den) / 60.0  # quarter notes per second
-                beat_sym = {2: "metNoteHalfUp", 4: "metNoteQuarterUp", 8: "metNote8thUp"}.get(
-                    score.time_den, "metNoteQuarterUp")
+                beat_q = score.beat_ticks / DIVISION        # beat length in crotchets
+                qps = score.bpm * beat_q / 60.0             # crotchets per second
+                if score.beat_ticks == 720:
+                    sym = "<sym>metNoteQuarterUp</sym><sym>space</sym><sym>metAugmentationDot</sym>"
+                elif score.beat_ticks == 960:
+                    sym = "<sym>metNoteHalfUp</sym>"
+                elif score.beat_ticks == 240:
+                    sym = "<sym>metNote8thUp</sym>"
+                else:
+                    sym = "<sym>metNoteQuarterUp</sym>"
                 out.append(f"<Tempo><tempo>{qps:.6f}</tempo><followText>1</followText>"
-                           f"<text><sym>{beat_sym}</sym> = {int(round(score.bpm))}</text></Tempo>")
+                           f"<text>{sym} = {int(round(score.bpm))}</text></Tempo>")
         out.append(contents[0][mi])
         if mi == n - 1:
             out.append("<BarLine><subtype>end</subtype><span>1</span></BarLine>")
