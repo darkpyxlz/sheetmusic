@@ -294,9 +294,9 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                             fill_gaps=0.25)
     # accompaniment onsets are smeared (strums, arpeggios, long STFT windows):
     # snap them harder so chords line up instead of scattering into 32nds
-    acc_q = rhythm.quantize(acc_notes, bm, offset, tpb, agrid, monophonic=False,
-                            fill_gaps=0.25, snap_tol=0.18,
-                            min_units=max(1, 120 // (tpb // agrid)))  # >= a 16th
+    acc_q = rhythm.quantize_poly(acc_notes, bm, offset, tpb, agrid, snap_tol=0.18,
+                                 min_units=max(1, 120 // (tpb // agrid)),  # >= a 16th
+                                 split=opts.split_point)
 
     # ---------------- key ----------------
     if opts.key:
@@ -320,8 +320,9 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                               if opts.melody_name.lower().startswith(("voice", "vocal")) else "keyboard.piano",
                               min_pitch=lo, max_pitch=hi))
     if opts.accompaniment or instrumental:
-        up = [q for q in acc_q if q.pitch >= opts.split_point]
-        dn = [q for q in acc_q if q.pitch < opts.split_point]
+        # staves follow the hands, not a fixed pitch (see hands.assign_hands)
+        up = [q for q in acc_q if (q.hand if q.hand is not None else q.pitch >= opts.split_point)]
+        dn = [q for q in acc_q if not (q.hand if q.hand is not None else q.pitch >= opts.split_point)]
         parts.append(PartSpec("Piano", "Pno.", 0, [StaffSpec(up, "G"), StaffSpec(dn, "F")]))
     title = opts.title if opts.title is not None else os.path.splitext(os.path.basename(path))[0]
     score = ScoreSpec(parts=parts, title=title, subtitle="Transcribed from audio",

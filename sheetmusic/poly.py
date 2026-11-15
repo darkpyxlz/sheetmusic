@@ -285,9 +285,11 @@ def activations_to_notes(pitches: np.ndarray | None, sals: np.ndarray | None, fp
                 if t - cuts[-1] >= min_len and b - t >= min_len:
                     cuts.append(int(t))
         cuts.append(b)
-        if short_spec is not None and refine_onsets:
-            cuts[0] = _attack_frame(short_spec, p, a, min(b, cuts[1]), short_df, ref_hz, excl,
-                                    min_len)
+        if short_spec is not None:
+            t_att, _sharp = _attack_frame(short_spec, p, a, min(b, cuts[1]), short_df, ref_hz, excl,
+                                           min_len)
+            if refine_onsets:
+                cuts[0] = t_att
         for i in range(len(cuts) - 1):
             s0, e = cuts[i], cuts[i + 1]
             if p < 40 and (e - s0) / fps < 0.25:
@@ -301,15 +303,41 @@ def activations_to_notes(pitches: np.ndarray | None, sals: np.ndarray | None, fp
                 e = _release_point(le[:, p], s0, e, min_len, release_db, release_win)
             v = float(np.median(x[s0:e][x[s0:e] > 0])) if np.any(x[s0:e] > 0) else 0.0
             vel = int(np.clip(30 + 80 * v / (ref + 1e-9), 25, 115))
-            notes.append(Note(start=s0 / fps, end=e / fps, pitch=p, velocity=vel))
+            dec = _decay_rate(L[s0 - a:e - a], fps) if L is not None and s0 >= a else float("nan")
+            notes.append(Note(start=s0 / fps, end=e / fps, pitch=p, velocity=vel, decay=dec))
     notes.sort(key=lambda n: (n.start, n.pitch))
+    return classify_decay(notes)
+
+
+def classify_decay(notes: list[Note], threshold: float = 8.0, span: int = 7) -> list[Note]:
+    """Mark freely decaying notes (``struck``): piano, guitar, harp, as
+    opposed to bowed, blown or sung notes that hold their level.
+
+    One note's decay rate is noisy (a short bowed note is mostly release, a
+    piano note in a chord is masked), but an instrument keeps to its
+    register, so each note takes the *median* decay of the measurable notes
+    within ``span`` semitones of it, or of the whole piece when there are too
+    few.  On the benchmark, piano pieces have a median of 11-22 dB/s, string
+    and wind pieces 0-3 dB/s, with no overlap."""
+    known = [(n.pitch, n.decay) for n in notes if n.decay == n.decay]
+    if not known:
+        return notes
+    kp = np.array([k[0] for k in known])
+    kd = np.array([k[1] for k in known])
+    overall = float(np.median(kd))
+    cache: dict[int, bool] = {}
+    for n in notes:
+        if n.pitch not in cache:
+            near = kd[np.abs(kp - n.pitch) <= span]
+            cache[n.pitch] = bool((float(np.median(near)) if near.size >= 6 else overall) > threshold)
+        n.struck = cache[n.pitch]
     return notes
 
 
 def _attack_frame(short_spec, p, a, b, df, ref_hz, exclude, min_len, before: int = 5,
-                  after: int = 12, min_rise_db: float = 12.0) -> int:
-    """Start of a note from the attack of its own partials in the short
-    (46 ms) window.
+                  after: int = 12, min_rise_db: float = 12.0):
+    """(start frame, struck?) of a note from the attack of its own partials
+    in the short (46 ms) window.
 
     The activation that finds a note comes from a 186 ms window, which smears
     a struck note's energy up to 93 ms *ahead* of the attack: a loud piano
@@ -319,21 +347,44 @@ def _attack_frame(short_spec, p, a, b, df, ref_hz, exclude, min_len, before: int
     12 dB within 35 ms) are moved: for a slow bowed or blown attack the
     steepest rise comes well after the note has begun, and the original
     start is the better one (measured: string-quartet F fell from 0.84 to
-    0.75 when every note was moved)."""
+    0.75 when every note was moved).
+
+    The same test tells struck notes from sustained ones, which matters for
+    how long a note is written: a struck string decays freely, so where it
+    falls below the detection threshold says little about the written
+    value, while a bowed or blown note lasts as long as it is driven."""
     lo = max(0, a - before)
     hi = min(short_spec.shape[0], max(a + after, a + 2), b)
     if hi - lo < 5:
-        return a
+        return a, False
     L = _partial_logmag(short_spec, p, lo, hi, df, ref_hz, smooth=1, exclude=exclude)
     if L is None:
-        return a
+        return a, False
     E = np.log(np.exp(2 * L).sum(axis=1) + 1e-12)        # log energy of the partials
     rise = E[3:] - E[:-3]                                  # over 3 frames (35 ms)
     k = int(np.argmax(rise))
     if rise[k] < min_rise_db / 10.0 * np.log(10.0):
-        return a
+        return a, False
     t = lo + k + 2                                         # middle of the rise
-    return int(min(max(t, a), b - min_len)) if b - min_len > a else a
+    return (int(min(max(t, a), b - min_len)) if b - min_len > a else a), True
+
+
+def _decay_rate(L: np.ndarray, fps: float, skip: int = 3, tail: int = 3, max_s: float = 0.6) -> float:
+    """dB per second lost by a note's own partials between its attack and its
+    end (least-squares slope of their summed energy).  A struck or plucked
+    string decays freely (tens of dB/s); a bowed or blown note holds its
+    level until it is released.  nan if the note is too short to tell."""
+    n = L.shape[0]
+    if n < skip + tail + 8:
+        return float("nan")
+    E = 10.0 / np.log(10.0) * np.log(np.exp(2 * L).sum(axis=1) + 1e-12)     # dB
+    pk = int(np.argmax(E[:max(skip + 1, min(n // 2, 12))]))
+    lo = pk + skip
+    hi = min(n - tail, lo + int(max_s * fps))
+    if hi - lo < 6:
+        return float("nan")
+    t = np.arange(hi - lo) / fps
+    return float(-np.polyfit(t, E[lo:hi], 1)[0])
 
 
 def _shared_partials(p: int, others: list[int], ref_hz: float, n_harm: int = 6,

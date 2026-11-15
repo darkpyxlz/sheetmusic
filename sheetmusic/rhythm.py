@@ -235,6 +235,127 @@ def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat:
     return [q for q in out if q.end > q.start]
 
 
+# Written length against sounding length, r = log2(written / sounding), as
+# cost per octave.  Measured on the benchmark scores: a sustained note is
+# written within +-0.2 octaves of how long it sounds (3 % are written more than
+# 0.3 octaves longer), so both directions are expensive; a struck note is
+# written over an octave longer than it sounds in 12-21 % of cases (it fades or
+# is damped), so lengthening it is cheap.
+VALUE_SLOPES = {False: (9.0, 4.0), True: (1.1, 4.0)}     # struck -> (longer, shorter)
+
+
+def quantize_poly(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat: int,
+                  grid: int, snap_tol: float = 0.18, min_units: int = 1,
+                  chord_window: float = 0.035, rest_cost: float = 3.2,
+                  near_cost: float = 0.4, far_cost: float = 1.4, later_cost: float = 0.7,
+                  hand_cost: float = 0.3, hand_far_cost: float = 0.9, other_hand_cost: float = 2.2,
+                  max_extend: float = 4.0, voice_span: int = 5, split: int = 60,
+                  slopes: dict | None = None, use_hands: bool = True) -> list[QNote]:
+    """Quantise polyphonic notes and choose their written values.
+
+    Starts: notes struck together (within ``chord_window`` s) get one
+    position, snapped adaptively like a single note.
+
+    Ends: in real scores a note almost always ends exactly where another
+    note begins (96 % of the notes in the benchmark scores; 4 % before a
+    rest).  So the candidates for a note's end are the *starts of later
+    notes*, plus the grid position where the sound stopped (a rest follows).
+    Each candidate has a cost in nats,
+
+        cost = prior + slope * |log2(written / sounding)|
+
+    * slope: see ``VALUE_SLOPES``; it depends on whether the note decays
+      freely (``struck``) and on the direction;
+    * prior for a rest: ``rest_cost`` (-ln 0.04);
+    * prior for an onset, sustained notes: ``near_cost`` where a note within
+      ``voice_span`` semitones starts (this voice moving on), else
+      ``far_cost``;
+    * prior for an onset, struck notes: these are piano-like, and in piano
+      scores about 90 % of notes end at the very next onset *of their own
+      hand* (see ``hands.assign_hands``): ``hand_cost`` for an onset of the
+      same hand near this pitch, ``hand_far_cost`` for one of the same hand
+      elsewhere, ``other_hand_cost`` when only the other hand plays;
+    * ``later_cost`` more for every such "own" onset passed over.
+    """
+    from .hands import assign_hands
+    slopes = slopes or VALUE_SLOPES
+    unit = ticks_per_beat // grid
+    if not notes:
+        return []
+    order = sorted(notes, key=lambda n: (n.start, n.pitch))
+    # ---- starts: chords snap together
+    starts = [0] * len(order)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and order[j + 1].start - order[i].start <= chord_window:
+            j += 1
+        b0 = float(np.mean([float(bm.to_beats(n.start)) for n in order[i:j + 1]])) + beat_offset
+        s = int(round(snap(b0, grid, snap_tol) * grid))
+        for k in range(i, j + 1):
+            starts[k] = s
+        i = j + 1
+    onset_units = np.array(sorted(set(starts)))
+    hands = assign_hands([QNote(s * unit, s * unit + unit, n.pitch) for s, n in zip(starts, order)],
+                         ticks_per_beat, split=split)
+    by_onset: dict[int, list[tuple[int, int]]] = {}
+    for k, s in enumerate(starts):
+        by_onset.setdefault(s, []).append((order[k].pitch, hands[k]))
+    out: list[QNote] = []
+    for k, n in enumerate(order):
+        s = starts[k]
+        if s < 0:
+            continue
+        b0 = float(bm.to_beats(n.start)) + beat_offset
+        b1 = float(bm.to_beats(n.end)) + beat_offset
+        sound = max((b1 - b0) * grid, 0.25)                    # sounding length in units
+        if sound < 0.5 * min_units:
+            continue                                           # a blip, not a note
+        up, down = slopes[bool(n.struck)]
+
+        def fit(length):
+            r = np.log2(length / sound)
+            return up * r if r > 0 else -down * r
+        # a rest follows: the end is where the sound stopped, snapped like a start
+        g = max(s + min_units, int(round(snap(s / grid + sound / grid, grid, snap_tol * 1.5) * grid)))
+        best_e, best_c = g, rest_cost + fit(g - s)
+        passed = 0
+        lo = np.searchsorted(onset_units, s + min_units)
+        for o in onset_units[lo:]:
+            length = o - s
+            if length > max(sound * 8.0, max_extend * grid):
+                break
+            there = by_onset[int(o)]
+            near = any(abs(q - n.pitch) <= voice_span for q, _h in there)
+            if n.struck and use_hands:
+                same = [q for q, h in there if h == hands[k]]
+                own = bool(same)
+                prior = other_hand_cost if not same else (
+                    hand_cost if any(abs(q - n.pitch) <= voice_span for q in same) else hand_far_cost)
+            else:
+                own = near
+                prior = near_cost if near else far_cost
+            c = prior + later_cost * passed + fit(length)
+            if c < best_c:
+                best_e, best_c = int(o), c
+            passed += own
+        out.append(QNote(s * unit, best_e * unit, n.pitch, n.velocity, n.struck, hands[k]))
+    # ---- same pitch: a note cannot overlap its own repetition
+    out.sort(key=lambda q: (q.start, q.pitch))
+    last: dict[int, QNote] = {}
+    res: list[QNote] = []
+    for q in out:
+        prev = last.get(q.pitch)
+        if prev is not None and q.start < prev.end:
+            if q.start <= prev.start:
+                prev.end = max(prev.end, q.end)
+                continue
+            prev.end = q.start
+        last[q.pitch] = q
+        res.append(q)
+    return [q for q in res if q.end > q.start]
+
+
 def fix_tempo_octave(bm: BeatMap, notes: list[Note], o: np.ndarray, fps: float,
                      slow_bpm: float = 50.0, fast_bpm: float = 200.0) -> BeatMap:
     """Resolve double/half tempo using the note rhythm.

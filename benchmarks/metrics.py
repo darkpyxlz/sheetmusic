@@ -61,3 +61,72 @@ def frame_chroma_acc(ref, est, dur, fps=20):
     act = A.any(1) | B.any(1)
     inter = (A & B).sum(1)[act]; union = (A | B).sum(1)[act]
     return float(np.mean(inter / np.maximum(union, 1))), float(np.mean((A == B).all(1)[act]))
+
+
+def note_values(ref_beats, qnotes, to_seconds, lead, spb, tol=0.10):
+    """Written note values against the score (soundfont tier, tempo known).
+
+    ref_beats: [(onset_beat, dur_beats, pitch)] in crotchets; qnotes: [(start_tick, end_tick, pitch)]
+    with 480 ticks per crotchet.  A written note is matched to a score note of the same pitch whose
+    onset is within ``tol`` seconds.  Returns the share of matched notes with exactly the right
+    value, too short (< 3/4) and too long (> 3/2), and the F-measure of notes that have the right
+    pitch, onset *and* value."""
+    ref = [(lead + b * spb, d, p) for b, d, p in ref_beats]
+    est = [(float(to_seconds(a)), (b - a) / 480.0, p) for a, b, p in qnotes]
+    pairs = match([(o, o, p) for o, _d, p in ref], [(o, o, p) for o, _d, p in est], tol)
+    if not pairs:
+        return dict(value_exact=0.0, too_short=0.0, too_long=0.0, value_F=0.0, short_share=0.0,
+                    short_share_ref=0.0)
+    ratio = np.array([est[j][1] / ref[i][1] for i, j in pairs])
+    exact = np.abs(ratio - 1.0) < 1e-6
+    return dict(value_exact=float(exact.mean()), too_short=float((ratio < 0.75).mean()),
+                too_long=float((ratio > 1.5).mean()),
+                value_F=prf(int(exact.sum()), len(ref), len(est))[2],
+                # how much of the page is semiquavers or shorter, against the score
+                short_share=float(np.mean([d <= 0.25 + 1e-9 for _o, d, _p in est])),
+                short_share_ref=float(np.mean([d <= 0.25 + 1e-9 for _o, d, _p in ref])))
+
+
+def ts_class(ts: str):
+    """(grouping, subdivision) of a time signature: 2/4, 4/4 and 2/2 are all
+    ("duple", "simple"); 6/8 and 12/8 ("duple", "compound"); 3/4 and 3/8
+    ("triple", "simple"); 9/8 ("triple", "compound")."""
+    n, d = (int(x) for x in ts.split("/"))
+    if (d >= 8 and n % 3 == 0 and n > 3) or (n, d) == (6, 4):
+        return ("triple" if n == 9 else "duple", "compound")
+    return ("triple" if n % 3 == 0 else "duple", "simple")
+
+
+def event_f(ref, est, tol=0.07):
+    """F-measure of event times (beats, downbeats) matched one-to-one within ``tol`` s."""
+    ref, est = sorted(ref), sorted(est)
+    if not ref or not est:
+        return 0.0
+    used, hit, j0 = set(), 0, 0
+    for t in ref:
+        best = None
+        while j0 < len(est) and est[j0] < t - tol:
+            j0 += 1
+        j = j0
+        while j < len(est) and est[j] <= t + tol:
+            if j not in used and (best is None or abs(est[j] - t) < abs(est[best] - t)):
+                best = j
+            j += 1
+        if best is not None:
+            used.add(best)
+            hit += 1
+    return prf(hit, len(ref), len(est))[2]
+
+
+def beat_f_any_level(ref, est, tol=0.07):
+    """Best beat F over metrical levels of the estimate (x2, x3, /2, /3):
+    separates 'right pulse, wrong level' from 'lost the pulse'."""
+    est = np.asarray(sorted(est), float)
+    cands = [est]
+    if est.size >= 2:
+        mid = 0.5 * (est[:-1] + est[1:])
+        cands.append(np.sort(np.concatenate([est, mid])))
+        third = np.concatenate([est, est[:-1] + np.diff(est) / 3, est[:-1] + 2 * np.diff(est) / 3])
+        cands.append(np.sort(third))
+        cands += [est[k::2] for k in range(2)] + [est[k::3] for k in range(3)]
+    return max(event_f(ref, list(c), tol) for c in cands)

@@ -109,7 +109,7 @@ def limit_depth(notes: list[Note], depth: int | None, bass_limit: int = 52,
         thr = 30 + strictness * np.percentile(low, 80)
         notes = [n for n in notes if n.pitch >= weak_bass_limit or n.velocity >= thr]
     order = sorted(notes, key=lambda n: (n.start, -n.velocity))
-    out = [Note(n.start, n.end, n.pitch, n.velocity) for n in order]
+    out = [Note(n.start, n.end, n.pitch, n.velocity, n.struck, n.decay) for n in order]
     alive = [True] * len(out)
     active: list[int] = []
 

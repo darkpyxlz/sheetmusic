@@ -128,6 +128,78 @@ def maestro_reference(pid):
     return sorted(out)
 
 
+# ------------------------------------------------------------------ ASAP (rhythm ground truth)
+ASAP = "https://raw.githubusercontent.com/fosfrancesco/asap-dataset/master/"
+# pieces per time signature (split evenly between dev and test)
+ASAP_QUOTA = {"4/4": 16, "3/4": 16, "2/4": 8, "6/8": 10, "12/8": 6, "2/2": 4, "3/8": 4, "9/8": 3}
+
+
+def asap_manifest():
+    """MAESTRO performances with ASAP beat / downbeat / time-signature / key
+    annotations: one performance per piece, a single time signature, starting
+    at the beginning of the audio file.  dev and test hold different pieces."""
+    import csv
+    import hashlib
+    d = os.path.join(DATA, "asap")
+    os.makedirs(d, exist_ok=True)
+    for name in ("metadata.csv", "asap_annotations.json"):
+        if not os.path.exists(os.path.join(d, name)):
+            urllib.request.urlretrieve(ASAP + name, os.path.join(d, name))
+    rows = list(csv.DictReader(open(os.path.join(d, "metadata.csv"))))
+    ann = json.load(open(os.path.join(d, "asap_annotations.json")))
+    by = {}
+    for r in rows:
+        a = ann.get(r["midi_performance"])
+        if not a or not r["maestro_audio_performance"] or r["start"] \
+                or not a.get("score_and_performance_aligned", True):
+            continue
+        sigs = {v[0] for v in a["perf_time_signatures"].values()}
+        if len(sigs) == 1 and r["folder"] not in by:
+            by[r["folder"]] = (r, a, sigs.pop())
+    out = {"dev": [], "test": []}
+    for ts, quota in ASAP_QUOTA.items():
+        pieces = sorted((v for v in by.values() if v[2] == ts),
+                        key=lambda v: hashlib.md5(v[0]["folder"].encode()).hexdigest())[:quota]
+        # alternate within each composer so both splits get the same mix of styles
+        pieces.sort(key=lambda v: (v[0]["composer"], hashlib.md5(v[0]["folder"].encode()).hexdigest()))
+        for i, (r, a, _ts) in enumerate(pieces):
+            split = "dev" if i % 2 == 0 else "test"
+            out[split].append((f"{'a' if split == 'dev' else 'b'}{len(out[split]):02d}", r, a))
+    return out
+
+
+def fetch_asap(which=("dev", "test"), seconds=60.0):
+    """The first ``seconds`` of each piece, stored as 22.05 kHz stereo WAV."""
+    import subprocess
+    d = os.path.join(DATA, "asap")
+    man = asap_manifest()
+    zf = None
+    for split in which:
+        index = []
+        for pid, r, a in man[split]:
+            out = os.path.join(d, pid + ".wav")
+            if not os.path.exists(out):
+                zf = zf or zipfile.ZipFile(io.BufferedReader(_HttpFile(MAESTRO + ".zip"), 1 << 20))
+                member = "maestro-v3.0.0/" + r["maestro_audio_performance"].replace("{maestro}/", "")
+                with zf.open(member) as src:
+                    head = src.read(44)
+                    rate = int.from_bytes(head[24:28], "little")
+                    block = int.from_bytes(head[32:34], "little")
+                    pcm = src.read(int(seconds * rate) * block)
+                cmd = ["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(rate), "-ac",
+                       str(int.from_bytes(head[22:24], "little")), "-i", "-", "-ar", "22050", out]
+                subprocess.run(cmd, input=pcm, check=True)
+            beats = [b for b in a["performance_beats"] if b < seconds]
+            downs = [b for b in a["performance_downbeats"] if b < seconds]
+            ts, n = next(iter(a["perf_time_signatures"].values()))
+            keys = [(float(t), v[1]) for t, v in a["perf_key_signatures"].items() if float(t) < seconds]
+            index.append(dict(id=pid, composer=r["composer"], title=r["title"], folder=r["folder"],
+                              ts=ts, beats_per_bar=n, beats=beats, downbeats=downs,
+                              fifths=keys[0][1] if keys else None, key_changes=len(keys) > 1))
+            print("asap", split, pid, ts, r["folder"], file=sys.stderr)
+        json.dump(index, open(os.path.join(d, split + ".json"), "w"))
+
+
 # ------------------------------------------------------------------ soundfont corpus
 def _render(events, programs, pans, path, tail=1.5):
     import pretty_midi
@@ -217,7 +289,106 @@ def render_corpus(which=("dev", "test"), n=24, beats=40.0):
         json.dump(index, open(os.path.join(d, split + ".json"), "w"))
 
 
+# ------------------------------------------------------------------ mixed corpus (meters, textures)
+# (corpus path, split, instrument style, tempo of the notated beat)
+# beat = crotchet in x/4, dotted crotchet in 6/8 9/8 12/8, minim in 2/2, quaver in 3/8
+MIXED = [
+    ("joplin/maple_leaf_rag", "dev", "piano", 88), ("chopin/mazurka06-2", "test", "piano", 132),
+    ("mozart/k545/movement1_exposition", "dev", "piano", 120),
+    ("schumann_clara/polonaise_op1n1", "dev", "piano", 96), ("schumann_clara/polonaise_op1n2", "test", "piano", 96),
+    ("schumann_clara/polonaise_op1n3", "dev", "piano", 100), ("schumann_clara/polonaise_op1n4", "test", "piano", 92),
+    ("verdi/laDonnaEMobile", "dev", "piano", 176), ("cpebach/h186", "test", "piano", 76),
+    ("mozart/k155/movement1", "dev", "strings", 126), ("mozart/k155/movement2", "test", "strings", 72),
+    ("mozart/k155/movement3", "dev", "strings", 120), ("mozart/k156/movement1", "dev", "strings", 200),
+    ("mozart/k156/movement2", "test", "strings", 60), ("mozart/k156/movement3", "dev", "strings", 120),
+    ("mozart/k458/movement1", "dev", "strings", 92), ("mozart/k458/movement2", "test", "strings", 112),
+    ("mozart/k458/movement3", "dev", "strings", 56), ("mozart/k458/movement4", "test", "strings", 132),
+    ("mozart/k80/movement1", "dev", "strings", 66), ("mozart/k80/movement2", "test", "strings", 126),
+    ("mozart/k80/movement3", "test", "strings", 120), ("mozart/k80/movement4", "dev", "strings", 80),
+    ("haydn/opus1no1/movement1", "test", "strings", 100), ("haydn/opus1no1/movement2", "dev", "strings", 120),
+    ("haydn/opus1no1/movement3", "test", "strings", 58), ("haydn/opus1no1/movement4", "test", "strings", 126),
+    ("haydn/opus1no1/movement5", "dev", "strings", 132), ("haydn/opus74no1/movement1", "dev", "strings", 132),
+    ("haydn/opus74no1/movement2", "test", "strings", 132), ("haydn/opus74no1/movement3", "dev", "strings", 150),
+    ("haydn/opus74no1/movement4", "test", "strings", 126), ("beethoven/opus18no1/movement1", "test", "strings", 144),
+    ("beethoven/opus18no1/movement2", "dev", "strings", 46), ("beethoven/opus18no1/movement4", "dev", "strings", 120),
+    ("schumann_robert/opus41no1/movement2", "test", "strings", 108),
+    ("schumann_robert/opus41no1/movement4", "dev", "strings", 60),
+    ("schumann_clara/opus17/movement3", "dev", "trio", 56), ("johnson_j_r/lift_every_voice", "test", "piano", 60),
+    ("corelli/opus3no1/1grave", "test", "strings", 60),
+    # single-line folk tunes: jigs (6/8), slip jigs (9/8), reels and hornpipes
+    ("ryansMammoth/BanishMisfortune.abc", "dev", "violin", 108), ("ryansMammoth/BagOfMealThe.abc", "test", "flute", 112),
+    ("ryansMammoth/BattleTheCashJig.abc", "dev", "accordion", 116), ("ryansMammoth/BillyORourkesJig.abc", "test", "violin", 104),
+    ("ryansMammoth/AndrewCareysSlipjig.abc", "dev", "flute", 112), ("ryansMammoth/BarneysGoatJig.abc", "test", "violin", 108),
+    ("ryansMammoth/DrinkOfBrandySlipjig.abc", "test", "accordion", 104), ("ryansMammoth/OffSheGoesJig.abc", "test", "flute", 100),
+    ("ryansMammoth/7thRegimentReel.abc", "dev", "violin", 104), ("ryansMammoth/AcaciaReel.abc", "test", "accordion", 100),
+    ("ryansMammoth/AcrobatsHornpipe.abc", "dev", "flute", 84), ("ryansMammoth/AdmiralsHornpipe.abc", "test", "violin", 80),
+]
+MIXED_PROGRAMS = {"piano": [0] * 8, "strings": [40, 40, 41, 42, 42], "trio": [40, 42, 0, 0],
+                  "violin": [40], "flute": [73], "accordion": [21]}
+
+
+def render_mixed(which=("dev", "test"), seconds=36.0):
+    """Real scores with varied meters and textures (piano pieces, quartet
+    movements, folk tunes), rendered through the soundfont in strict tempo."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    from music21 import corpus
+    d = os.path.join(DATA, "mixed")
+    os.makedirs(d, exist_ok=True)
+    for split in which:
+        index = []
+        for path, sp, style, beat_bpm in MIXED:
+            if sp != split:
+                continue
+            sc = corpus.parse(path)
+            if not sc.parts:                       # an ABC "opus": take its first tune
+                sc = sc.scores[0]
+            ts = sc.recurse().getElementsByClass("TimeSignature")[0]
+            ks = sc.recurse().getElementsByClass("KeySignature")[0]
+            num, den = ts.numerator, ts.denominator
+            compound = den == 8 and num % 3 == 0 and num > 3
+            beat_q = 1.5 if compound else 4.0 / den           # notated beat in crotchets
+            qbpm = beat_bpm * beat_q
+            spb = 60.0 / qbpm                                  # seconds per crotchet
+            beats = seconds / spb
+            m0 = sc.parts[0].getElementsByClass("Measure")[0]
+            pickup = float(m0.duration.quarterLength)
+            pickup = pickup if pickup < ts.barDuration.quarterLength - 1e-6 else 0.0
+            # stop at the first time-signature change
+            for t in sc.parts[0].recurse().getElementsByClass("TimeSignature")[1:]:
+                off = float(t.getOffsetInHierarchy(sc.parts[0]))
+                if t.ratioString != ts.ratioString and off < beats:
+                    beats = off
+            ev = []
+            for pi, part in enumerate(sc.parts):
+                for nt in part.flatten().stripTies().notes:
+                    b, dur = float(nt.offset), float(nt.quarterLength)
+                    if dur > 0 and b < beats - 1e-6:
+                        ev += [(b, min(dur, beats - b), p.midi, pi) for p in nt.pitches]
+            ev.sort()
+            pid = f"{'p' if split == 'dev' else 'q'}{len(index):02d}"
+            lead = 0.4
+            progs = MIXED_PROGRAMS[style]
+            wav = os.path.join(d, pid + ".wav")
+            if not os.path.exists(wav):
+                nparts = max(e[3] for e in ev) + 1
+                pans = [64, 50, 78, 64, 64, 64, 64, 64][:max(nparts, 1)]
+                if style == "piano":
+                    pans = [64] * 8
+                vel = lambda ch: 88 if ch == 0 else 74     # top part a little louder
+                _render([(lead + b * spb, lead + (b + du * 0.95) * spb, p, vel(ch), min(ch, len(progs) - 1))
+                         for b, du, p, ch in ev], progs[:max(nparts, 1)], pans + [64] * 8, wav)
+            index.append(dict(id=pid, src=path, style=style, bpm=qbpm, beat_bpm=beat_bpm,
+                              ts=ts.ratioString, fifths=ks.sharps, pickup=pickup, lead=lead,
+                              notes=[(b, du, p) for b, du, p, _ in ev],
+                              parts=[pi for *_x, pi in ev]))
+            print("mixed", split, pid, path, style, ts.ratioString, f"q={qbpm:.0f}", len(ev), file=sys.stderr)
+        json.dump(index, open(os.path.join(d, split + ".json"), "w"))
+
+
 if __name__ == "__main__":
     which = tuple(sys.argv[1:]) or ("dev", "test")
     fetch_maestro(which)
     render_corpus(which)
+    render_mixed(which)
+    fetch_asap(which)
