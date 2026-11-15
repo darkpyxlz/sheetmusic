@@ -184,7 +184,8 @@ def activations_to_notes(pitches: np.ndarray | None, sals: np.ndarray | None, fp
                          partial_frac: float = 0.6,
                          short_spec: np.ndarray | None = None, short_df: float = 0.0,
                          onset_env: np.ndarray | None = None,
-                         act_in: np.ndarray | None = None) -> list[Note]:
+                         act_in: np.ndarray | None = None,
+                         refine_onsets: bool = True) -> list[Note]:
     if act_in is not None:
         act = act_in.astype(np.float32).copy()
         T = act.shape[0]
@@ -284,6 +285,9 @@ def activations_to_notes(pitches: np.ndarray | None, sals: np.ndarray | None, fp
                 if t - cuts[-1] >= min_len and b - t >= min_len:
                     cuts.append(int(t))
         cuts.append(b)
+        if short_spec is not None and refine_onsets:
+            cuts[0] = _attack_frame(short_spec, p, a, min(b, cuts[1]), short_df, ref_hz, excl,
+                                    min_len)
         for i in range(len(cuts) - 1):
             s0, e = cuts[i], cuts[i + 1]
             if p < 40 and (e - s0) / fps < 0.25:
@@ -300,6 +304,36 @@ def activations_to_notes(pitches: np.ndarray | None, sals: np.ndarray | None, fp
             notes.append(Note(start=s0 / fps, end=e / fps, pitch=p, velocity=vel))
     notes.sort(key=lambda n: (n.start, n.pitch))
     return notes
+
+
+def _attack_frame(short_spec, p, a, b, df, ref_hz, exclude, min_len, before: int = 5,
+                  after: int = 12, min_rise_db: float = 12.0) -> int:
+    """Start of a note from the attack of its own partials in the short
+    (46 ms) window.
+
+    The activation that finds a note comes from a 186 ms window, which smears
+    a struck note's energy up to 93 ms *ahead* of the attack: a loud piano
+    note crosses the detection threshold several frames early, a slowly
+    bowed one late.  The steepest rise of the partials' energy in the short
+    window marks the attack itself.  Only sharp attacks (struck or plucked:
+    12 dB within 35 ms) are moved: for a slow bowed or blown attack the
+    steepest rise comes well after the note has begun, and the original
+    start is the better one (measured: string-quartet F fell from 0.84 to
+    0.75 when every note was moved)."""
+    lo = max(0, a - before)
+    hi = min(short_spec.shape[0], max(a + after, a + 2), b)
+    if hi - lo < 5:
+        return a
+    L = _partial_logmag(short_spec, p, lo, hi, df, ref_hz, smooth=1, exclude=exclude)
+    if L is None:
+        return a
+    E = np.log(np.exp(2 * L).sum(axis=1) + 1e-12)        # log energy of the partials
+    rise = E[3:] - E[:-3]                                  # over 3 frames (35 ms)
+    k = int(np.argmax(rise))
+    if rise[k] < min_rise_db / 10.0 * np.log(10.0):
+        return a
+    t = lo + k + 2                                         # middle of the rise
+    return int(min(max(t, a), b - min_len)) if b - min_len > a else a
 
 
 def _shared_partials(p: int, others: list[int], ref_hz: float, n_harm: int = 6,
