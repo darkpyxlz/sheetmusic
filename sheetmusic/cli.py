@@ -26,6 +26,16 @@ def _range(s: str):
     return float(a), float(b)
 
 
+def _depth(s: str):
+    from .depth import parse_depth
+    try:
+        parse_depth(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "depth must be auto, full, melody, sparse, normal, rich or a number")
+    return s
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="sheetmusic",
@@ -68,7 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--min-note", type=float, default=0.09,
                    help="shortest melody note in seconds (default 0.09)")
     g = p.add_argument_group("accompaniment")
-    g.add_argument("--polyphony", type=int, default=5, help="max simultaneous notes (5)")
+    g.add_argument("--depth", default="auto", type=_depth, metavar="auto|full|melody|sparse|normal|rich|N",
+                   help="how many notes may sound at once. auto (default): chosen from the "
+                        "music, and stricter in the bass, where most false notes are; "
+                        "melody/sparse/normal/rich = 1/2/4/6; a number sets it directly; "
+                        "full: keep everything the analysis finds")
+    g.add_argument("--polyphony", type=int, default=5,
+                   help="analysis polyphony: harmonic series searched per frame (5)")
     g.add_argument("--poly-threshold", type=float, default=0.15,
                    help="note detection threshold (0..1, lower = more notes, default 0.15)")
     g.add_argument("--split", type=int, default=60,
@@ -99,7 +115,7 @@ def main(argv=None) -> int:
         remove_voice_from_accompaniment=not args.keep_voice_in_accompaniment,
         voicing_threshold=args.voicing, melody_range=args.voice_range,
         voice_strictness=args.voice_strictness,
-        min_melody_note=args.min_note, max_polyphony=args.polyphony,
+        min_melody_note=args.min_note, max_polyphony=args.polyphony, depth=args.depth,
         poly_threshold=args.poly_threshold, split_point=args.split, bpm=args.bpm,
         time_signature=args.time_signature, melody_grid=args.grid,
         accomp_grid=args.accomp_grid, key=args.key, tuning=args.tuning,

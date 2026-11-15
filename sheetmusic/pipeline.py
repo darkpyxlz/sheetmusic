@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import audio, melody, meter, poly, rhythm, spectral
+from . import audio, depth as depth_mod, melody, meter, poly, rhythm, spectral
 from .keys import estimate_key, tpc_name, spell
 from .mscore import PartSpec, ScoreSpec, StaffSpec
 from .notes import Note, QNote
@@ -37,6 +37,8 @@ class TranscribeOptions:
     melody_range: tuple[float, float] = (45, 86)
     min_melody_note: float = 0.09
     # accompaniment
+    depth: int | str | None = "auto"  # notes sounding at once: "auto", "full" (no limit),
+    #                                   "melody"/"sparse"/"normal"/"rich" (1/2/4/6) or a number
     max_polyphony: int = 5
     poly_method: str = "auto"        # "greedy" | "nmf" | "auto" (nmf for instrumentals)
     poly_threshold: float = 0.15
@@ -191,6 +193,7 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
 
     # ---------------- accompaniment ----------------
     acc_notes: list[Note] = []
+    depth_used = "full"
     onset = rhythm.onset_envelope(F.flux, fps)
     if opts.accompaniment or instrumental:
         _log(opts, "Transcribing the " + ("music" if instrumental else "accompaniment")
@@ -224,7 +227,17 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
             short_spec=F.short, short_df=opts.sr / F.short_nfft, onset_env=onset,
             act_in=act_nmf)
         acc_notes = poly.prune_overtone_ghosts(acc_notes)
-        _log(opts, f"  {len(acc_notes)} notes")
+        n_found = len(acc_notes)
+        d = depth_mod.parse_depth(opts.depth)
+        if d == 0:
+            d = depth_mod.auto_depth(acc_notes)
+            depth_used = f"auto ({d})"
+        else:
+            depth_used = "full" if d is None else str(d)
+            if d is not None and mel_notes and show_melody:
+                d = max(1, d - 1)          # the voice is one of the sounding notes
+        acc_notes = depth_mod.limit_depth(acc_notes, d)
+        _log(opts, f"  {n_found} notes found, {len(acc_notes)} kept at depth {depth_used}")
 
     # ---------------- rhythm ----------------
     _log(opts, "Tempo and beat tracking ...")
@@ -313,7 +326,7 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                       beat_ticks_override=tpb)
     info = dict(duration=dur, tuning_cents=tuning, bpm=bm.bpm, key=key_name,
                 time_signature=met.name, meter_scores=met.scores,
-                has_vocals=has_vocals, vocal_evidence=vinfo,
+                has_vocals=has_vocals, vocal_evidence=vinfo, depth=depth_used,
                 melody_notes=len(mel_q), accomp_notes=len(acc_q),
                 seconds=time.time() - t0)
     _log(opts, f"Done in {info['seconds']:.1f} s: {len(mel_q)} melody notes, "
