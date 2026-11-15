@@ -16,6 +16,8 @@ are no models to download and no GPU is needed. A 4-minute song with vocals take
 about 40 s on a laptop CPU, an instrumental one about 80 s (it uses a slower, more
 accurate analysis). Neural source separation (Demucs) is an optional extra.
 
+How accurate it is on real recordings, measured, is in "Accuracy, honestly" below.
+
 ![example](examples/synthetic_song.png)
 
 *Output for the synthetic test song in `tests/synth.py`. The "singer" there is made
@@ -51,6 +53,7 @@ python -m sheetmusic song.mp3 --mode melody         # only the vocal line
 python -m sheetmusic song.mp3 --mode instrumental   # force "no vocals": full piano score
 python -m sheetmusic song.mp3 --mode vocal          # force "has vocals"
 python -m sheetmusic song.mp3 --separate demucs     # neural vocal separation first
+python -m sheetmusic song.mp3 --depth sparse        # fewer simultaneous notes (see below)
 python -m sheetmusic song.mp3 --start 30 --duration 20 --bpm 92 --key Eb --time-signature 6/8
 ```
 
@@ -74,8 +77,9 @@ Useful options (`python -m sheetmusic -h` lists them all):
 | `--voicing 0.3` | lower it to get more (quieter) melody notes, raise it for fewer |
 | `--voice-strictness 0.72` | how strictly instrument notes (intro riffs, fills between vocal lines) are kept out of the voice staff; raise if you still see extra notes, lower if real sung notes go missing |
 | `--voice-range 45-86` | MIDI range searched for the melody (A2–D6; use `38-86` for a bass singer) |
+| `--depth auto\|full\|melody\|sparse\|normal\|rich\|N` | how many notes may sound at once (see "Depth"). `auto` (default) picks it from the music; `melody`/`sparse`/`normal`/`rich` = 1/2/4/6; `full` keeps everything the analysis finds |
 | `--poly-threshold 0.15` | accompaniment sensitivity (lower = more notes) |
-| `--polyphony 5` | max simultaneous accompaniment notes |
+| `--polyphony 5` | analysis polyphony: harmonic series searched per frame (use `--depth` to thin the result) |
 | `--bpm`, `--time-signature 6/8`, `--key F#m`, `--tuning +20` | override what the program detects (time signature, tempo, key and tuning are all automatic by default) |
 | `--grid 8`, `--accomp-grid 8` | finest note value as subdivisions per beat (8 = demisemiquavers / 32nds, 4 = 16ths, 2 = quavers). Quantisation is adaptive: each note snaps to the longest value that fits its timing, so 32nds only appear where the music really has them |
 | `--keep-voice-in-accompaniment` | don't remove the voice's harmonics from the piano part |
@@ -153,15 +157,49 @@ The program handles each of these:
   for scoops) or its first overtones are suppressed
   (`melody.vocal_harmonic_mask`, `poly.voice_exclusion`).
 
+### Depth: how many notes at once
+
+A multi-pitch analysis reports everything that looks like a harmonic series: real
+notes, but also overtones, sub-harmonics and the ringing of notes that have ended.
+Most music has two to four real notes sounding at a time, and fewer in the bass.
+`--depth` (`sheetmusic/depth.py`) thins the result with two rules:
+
+* **Depth.** At most N notes sound at once. When one more starts, the least important
+  note gives way: one that is already sounding is cut short there (it was most likely
+  ringing on), one that is just starting is dropped. Importance is the note's strength,
+  with a bonus for the top line and the bass line. In a vocal song the voice counts as
+  one of the N.
+* **Stricter bass.** Below A3 a note must be clearly present next to the piece's other
+  low notes. On real piano recordings two thirds of the notes found below E3 were
+  false, and they are weaker than the real ones. The reference is the low register
+  itself, so a soft accompaniment under a loud tune is kept. This rule was measured on
+  instrumental music; under vocals it is only applied when you ask for a depth below 3.
+
+`auto` counts how many clearly present notes sound together most of the time (80th
+percentile) and allows one more, between 2 and 6. A lower depth trades recall for
+precision: on the real-piano development set `--depth 2` gives precision 0.74 at
+recall 0.39, `full` gives 0.61 at 0.58.
+
 ### Vocals or instrumental?
 
-The lead line found by the melody tracker is tested for three properties that tell
-a singer from a melodic instrument: its **timbre changes from note to note**
-(different vowels = different formants; a flute, violin or piano keeps its tone
-colour), its pitch **wobbles** slightly inside notes (keyboards and plucked strings
-are rock steady), and its partials keep **moving** (vibrato and intonation). Only
-when all three look like singing is the song treated as a vocal song
-(`melody.vocal_evidence`). Use `--mode vocal` / `--mode instrumental` to override.
+The lead line found by the melody tracker must pass six checks before a song is
+treated as a vocal song (`melody.vocal_evidence`):
+
+* its **timbre changes from note to note** (different vowels = different formants);
+* its pitch **wobbles** inside notes by a vibrato-sized amount: not rock steady like a
+  keyboard, and not jumping like a path that hops between the notes of a piano texture;
+* its partials keep **moving** (vibrato and intonation);
+* it is mixed to the **centre**, as lead vocals are (a stereo-miked instrument is not;
+  mono files pass this check by construction);
+* it stays within a **vocal range** of about an octave and a half.
+
+The first three alone are what a synthetic piano fails, not what a voice is: every
+real solo-piano recording in the benchmark passed them. A wrong "instrumental" only
+costs the voice staff, while a wrong "vocal" removes a phantom voice from the music
+and halves the note accuracy, so doubtful cases are treated as instrumental. Use
+`--mode vocal` / `--mode instrumental` to override. **This check has not been
+validated on real singing** (no annotated vocal recordings were available); if a
+song with vocals comes out without a voice staff, use `--mode vocal`.
 
 ### Instrumental music
 
@@ -178,6 +216,9 @@ For every note, attacks and releases are judged on that note's **own partials**:
 * **Repeated notes are split** when most of its partials jump up together in a short
   (46 ms) analysis window, together with an onset in the mix. Vibrato wobble and a
   neighbour's attack don't count.
+* **Note starts** of struck and plucked notes are placed at the attack of the note's
+  own partials in the short window. The long window that finds the note smears its
+  energy ahead of the attack, which made piano notes start 14–28 ms early.
 * **Note ends** come from a steep fall of its partials (key or string released), not
   from waiting for the sound and room reverb to fade. Otherwise every quaver ends up
   written as a crotchet.
@@ -222,8 +263,10 @@ the treble staff, the rest on the bass staff.
   their 16ths/32nds. Accompaniment onsets snap a little harder (strums and
   arpeggios smear them) and are at least a 16th long. Small gaps in the vocal
   line are closed (legato).
-* **Key**: the transcribed notes (bass counted double) and the spectrum's chroma are
-  correlated with Krumhansl–Kessler major/minor profiles. Relative keys (C major and
+* **Key**: the transcribed notes (bass counted double) are correlated with
+  Krumhansl–Kessler major/minor profiles. (The raw spectrum's chroma is no longer
+  blended in: every note's third partial sounds a fifth above it, which pulled keys
+  towards the dominant.) Relative keys (C major and
   A minor) share their notes, so the tonic decides between them: the final bass note,
   the last note, the first bass note and the most used bass notes. The key signature
   follows, and accidentals are spelled for the key: F♯ in G major, B♭ in F major, and
@@ -241,30 +284,63 @@ the treble staff, the rest on the bass staff.
 Transcribing polyphonic music automatically is still an unsolved research problem.
 Expect a usable draft that you correct in MuseScore, not a finished engraving.
 
-On the synthetic test songs (`tests/`; the instrumental pieces are in
-`tests/synth_instr.py`):
+Accuracy is reported in three tiers, because they mean different things. "Note F" is
+the F-measure of notes with the right pitch whose start is within ±50 ms of the truth
+(the usual convention), measured on the notes before quantisation, with every setting
+at its default.
 
-| | note F-measure | detected correctly |
-|---|---|---|
-| vocal melody, simple song (100/140/72 BPM, +35-cent detuning, low male voice, mono) | 0.96 – 1.00 | tempo, 4/4, key, vocals: all |
-| vocal melody, "hard" song (instrumental intro riff, reverb, slides, backing vocals, strummed guitar, snare, tempo drift) | 0.90 | all |
-| vocal melody, sung waltz (3/4) | 0.94 | all |
-| piano waltz, 3/4, F major (instrumental) | 0.98 | all |
-| solo piano, 4/4, D minor (instrumental) | 0.94 | all |
-| strings + piano + bass + drums, 4/4, Eb major (instrumental) | 0.77 | all |
-| flute + guitar arpeggios + bass, 6/8, A minor (instrumental) | 0.74 | all |
-| the four instrumental pieces transposed to 8 other keys | – | key, meter, tempo: 8/8 |
-| accompaniment of vocal songs | 0.6 – 0.75 | – |
+**Real recordings** (MAESTRO v3: concert-grand piano with aligned MIDI, 8 development
+and 8 held-out pieces by different composers, 13–15 minutes each set):
 
-Real recordings are harder. Reverb, backing vocals, distorted guitars and dense
-mixes all lower accuracy. For those, `--separate demucs` helps the most. If the
-tempo comes out doubled or halved, or the key is wrong, override them with `--bpm`
-and `--key`.
+| | precision | recall | note F | F with note ends |
+|---|---|---|---|---|
+| development set | 0.68 | 0.57 | **0.62** | 0.20 |
+| held-out set | 0.70 | 0.62 | **0.65** | 0.23 |
+
+This is virtuosic solo piano only. There is **no measurement on real singing, guitar
+or band recordings yet** (no annotated data was available), and none of how Demucs
+affects accuracy.
+
+**Sample-based** (Bach chorales rendered through a General MIDI soundfont, 24
+development and 24 held-out excerpts; exact notes, tempo, meter and key are known):
+
+| held-out set | note F | tempo | time signature | downbeat | key signature |
+|---|---|---|---|---|---|
+| piano | 0.81 | 8/8 | 7/8 | 2/8 | 3/8 |
+| string quartet | 0.83 | 7/8 | 7/8 | 4/8 | 7/8 |
+| wind quartet | 0.65 | 8/8 | 8/8 | 3/8 | 8/8 |
+
+So tempo is reliable, the time signature is reliable for 4/4, and the downbeat and
+the key signature are not: expect to correct them (`--key`, or move the barlines in
+MuseScore). On four real piano pieces in 3/4 or 6/8 the detected meter was 4/4 every
+time.
+
+**Synthetic** (`tests/`, the repo's own additive synthesiser; these pieces were used
+to tune the program, so read them as "it works on clean input", not as accuracy).
+Scored on the quantised output with a ±0.26-beat tolerance:
+
+| | note F-measure |
+|---|---|
+| vocal melody, simple song (100/140/72 BPM, +35-cent detuning, low male voice, mono) | 0.96 – 1.00 |
+| vocal melody, "hard" song (intro riff, reverb, slides, backing vocals, strummed guitar, snare, tempo drift) | 0.90 |
+| vocal melody, sung waltz (3/4) | 0.94 |
+| piano waltz, 3/4, F major | 0.98 |
+| solo piano, 4/4, D minor | 0.93 |
+| strings + piano + bass + drums, 4/4, Eb major | 0.77 |
+| flute + guitar arpeggios + bass, 6/8, A minor | 0.77 |
+| accompaniment of vocal songs | 0.59 – 0.72 |
+
+Tempo, meter, key and vocals/instrumental are detected correctly on all of these,
+including 16 transpositions of the four instrumental pieces.
+
+How to reproduce, and what changed these numbers, is in "Benchmarks" below and in
+`docs/AUDIT.md`. If the tempo comes out doubled or halved, or the key is wrong,
+override them with `--bpm` and `--key`.
 
 Known limitations:
 
-* Only one voice per staff (chords are fine). Simultaneous notes of different
-  lengths are written as tied chords.
+* Voices on a staff are assigned by "first free voice", so a line can move between
+  voices; the piano staves are split at a fixed pitch, not by hand.
 * No triplets or swing: the grid is binary (1/2/4/8/16 subdivisions per beat).
 * No lyrics, dynamics or articulations.
 * Only one time signature and tempo marking for the whole piece; the beat map
@@ -282,6 +358,20 @@ python tests/synth.py test.mp3   # regenerate the synthetic test song
 # tests/synth_instr.py: make_piece(name) builds the instrumental pieces (and a sung waltz)
 ```
 
+### Benchmarks
+
+```bash
+pip install pretty_midi music21 && pip install --no-deps tinysoundfont
+python -m benchmarks.datasets            # fetch MAESTRO pieces (range requests), render chorales
+python -m benchmarks.run maestro dev     # real piano, development set
+python -m benchmarks.run corpus dev      # soundfont chorales, development set
+python -m benchmarks.run maestro test    # held-out: only to confirm a finished change
+python -m benchmarks.run maestro dev --opt depth='"full"' --tag full   # any TranscribeOptions field
+```
+
+Tune on `dev`, confirm on `test`, and report both. None of this is needed to use the
+program.
+
 Layout:
 
 ```
@@ -293,10 +383,12 @@ sheetmusic/
   rhythm.py     onsets, tempo, beat tracking, quantisation
   meter.py      time signature + downbeat detection
   keys.py       key estimation and pitch spelling
+  depth.py      how many notes may sound at once (--depth)
   mscore.py     .mscx / .mscz writer
   midi.py       MIDI writer
   pipeline.py   glue (TranscribeOptions, transcribe())
   cli.py        command line
+benchmarks/     real-recording and soundfont benchmarks (not installed)
 ```
 
 Use it from Python:

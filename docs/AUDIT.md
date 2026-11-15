@@ -378,3 +378,43 @@ output, CI.
 | Slides, consonants, drums, tuning and other vocal claims | Each is supported only by the synthetic singer. |
 | Runtime: 40 s vocal, 80 s instrumental for 4 minutes | Supported: 0.16× and 0.25× real time here. |
 | "Instrumental mode: slower, more accurate" | Supported: NMF 0.59 vs greedy 0.49 on the same recordings. |
+
+## 8. Addendum: first round of changes
+
+Four changes were made after this audit, each benchmarked against the previous
+version. The held-out sets (8 MAESTRO pieces by other composers, 24 other chorales)
+were fixed before any change and run twice: once at the end, and once more after
+correcting a regression that the synthetic vocal songs exposed.
+
+| step | change | real piano dev F | chorales dev F |
+|---|---|---|---|
+| 0 | audited code, default mode | 0.318 | 0.701 |
+| 1 | vocal detection: also require centre placement, vocal range, vibrato-sized wobble | 0.588 | 0.694 |
+| 2 | depth limit with a stricter bass (`--depth`, default `auto`) | 0.595 | 0.720 |
+| 3 | struck-note onsets placed from the short window | 0.616 | 0.764 |
+| 4 | key profile without raw-spectrum chroma | 0.616 | 0.765 |
+
+Held-out confirmation, audited code against current code:
+
+| | note F | precision | recall | false "vocals" |
+|---|---|---|---|---|
+| real piano | 0.408 → **0.654** | 0.38 → 0.70 | 0.45 → 0.62 | 7/8 → 0/8 |
+| chorales | 0.721 → **0.761** | 0.71 → 0.78 | 0.74 → 0.75 | 10/24 → 0/24 |
+
+What did not improve, or got worse:
+
+- Frame-level pitch-class agreement on chorales fell from 0.83 to 0.78 (held-out). Notes
+  are now cut shorter by the depth limit and wind pieces no longer take the vocal path.
+- Wind-quartet F is unchanged (0.64 → 0.65).
+- Key signature (17 → 18 of 24), time signature (22 → 22) and downbeat (10 → 9) on the
+  held-out chorales did not move. The key change in step 4 helped on 30-second dev
+  excerpts (14 → 17) but not on the full-length runs.
+- Two depth rules were withdrawn on evidence. The low-interval limit gained under 0.005
+  on real piano and cost 0.05 on strummed-guitar voicings. The stricter bass removed
+  real chord notes under vocals, so it applies to instrumental analysis only.
+- The vocal check is now conservative and has still never seen real singing.
+
+Roadmap status: M0 (harness) and M1 (vocal decision) are done to the extent data
+allows; M2 (onset timing) is done for struck notes. M3–M9 are open. The largest
+remaining losses are unchanged from section 5: repeated notes, soft notes, overtone
+and sub-harmonic ghosts, note ends, meter and downbeat.

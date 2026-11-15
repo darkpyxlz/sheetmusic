@@ -24,9 +24,11 @@ def test_new_note_cuts_a_ringing_one_short():
 
 def test_low_interval_limit():
     # a third deep in the bass: the weaker note goes; an octave is fine
-    out = limit_depth([Note(0, 1, 36, 80), Note(0, 1, 40, 60), Note(0, 1, 72, 70)], 6)
+    notes = [Note(0, 1, 36, 80), Note(0, 1, 40, 60), Note(0, 1, 72, 70)]
+    assert len(limit_depth(notes, 6)) == 3                      # off by default
+    out = limit_depth(notes, 6, bass_interval=7)
     assert sorted(n.pitch for n in out) == [36, 72]
-    out = limit_depth([Note(0, 1, 36, 80), Note(0, 1, 48, 75), Note(0, 1, 72, 70)], 6)
+    out = limit_depth([Note(0, 1, 36, 80), Note(0, 1, 48, 75), Note(0, 1, 72, 70)], 6, bass_interval=7)
     assert len(out) == 3
 
 

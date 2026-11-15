@@ -236,7 +236,11 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
             depth_used = "full" if d is None else str(d)
             if d is not None and mel_notes and show_melody:
                 d = max(1, d - 1)          # the voice is one of the sounding notes
-        acc_notes = depth_mod.limit_depth(acc_notes, d)
+        strict = None                      # per-depth default (measured on the NMF path)
+        if method != "nmf":
+            # greedy saliences: weak low notes are as often real as false
+            strict = 0.0 if (depth_used.startswith("auto") or d is None or d >= 3) else 0.4
+        acc_notes = depth_mod.limit_depth(acc_notes, d, strictness=strict)
         _log(opts, f"  {n_found} notes found, {len(acc_notes)} kept at depth {depth_used}")
 
     # ---------------- rhythm ----------------

@@ -8,16 +8,12 @@ muddy, so composers avoid them, while the analysis is at its least reliable
 (semitones are closer together than the frequency resolution).  Limiting the
 depth therefore removes mostly errors.
 
-``limit_depth`` applies two rules to the notes (in seconds, before
+``limit_depth`` applies these rules to the notes (in seconds, before
 quantisation):
 
-* **low-interval limit**: two notes below ``bass_limit`` may not sound
-  together closer than ``bass_interval`` semitones (octaves and fifths are
-  fine); the weaker one gives way;
 * **depth**: at most ``depth`` notes at once.  When one more starts, the
   least important note gives way.  Importance is the note's strength, with a
   bonus for the top line and the bass line, which carry the music.
-
 * **stricter bass**: below ``weak_bass_limit`` (A3) a note must be clearly
   present next to the piece's other low notes: at least ``bass_strictness``
   times the strength of a strong low note (their 80th percentile).  On real
@@ -26,9 +22,19 @@ quantisation):
   weaker than the real ones.  The reference is the low register itself, not
   the whole mix, so a soft accompaniment under a loud tune is kept.
 
+* **low-interval limit** (off by default, ``bass_interval``): two notes below
+  ``bass_limit`` may not sound together closer than that many semitones.
+  It gained under 0.005 F on real piano and cost 0.05 on strummed guitar
+  voicings, which do put close triads low.
+
 "Gives way" means: a note that is already sounding is cut short at that
 moment (it was most likely ringing on), a note that is just starting is
 dropped.
+
+The bass rule was measured on the NMF (instrumental) analysis.  On the
+greedy analysis used under vocals it removed real chord notes without
+removing false ones, so the pipeline leaves it off there unless a shallow
+depth is asked for explicitly.
 """
 
 from __future__ import annotations
@@ -90,7 +96,7 @@ def bass_strictness(depth: int | None) -> float:
 
 
 def limit_depth(notes: list[Note], depth: int | None, bass_limit: int = 52,
-                bass_interval: int = 7, min_keep: float = 0.08,
+                bass_interval: int = 0, min_keep: float = 0.08,
                 edge_bonus: float = 0.25, weak_bass_limit: int = 57,
                 strictness: float | None = None) -> list[Note]:
     if depth is None or not notes:
@@ -118,7 +124,7 @@ def limit_depth(notes: list[Note], depth: int | None, bass_limit: int = 52,
         active = [j for j in active if alive[j] and out[j].end > now + 1e-6]
         # ---- low-interval limit
         ok = True
-        if n.pitch < bass_limit:
+        if bass_interval > 0 and n.pitch < bass_limit:
             for j in list(active):
                 m = out[j]
                 if m.pitch < bass_limit and 0 < abs(m.pitch - n.pitch) < bass_interval:
