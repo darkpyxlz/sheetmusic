@@ -117,6 +117,16 @@ def hpss_mask(mag: np.ndarray, time_size: int = 17, freq_size: int = 17,
     return Hp / (Hp + Pp + 1e-12)
 
 
+def flatness(mag: np.ndarray, df: float, fmin: float = 300.0, chunk: int = 4096) -> np.ndarray:
+    """Spectral flatness per frame (geometric / arithmetic mean) above fmin."""
+    lo = max(1, int(fmin / df))
+    out = np.empty(mag.shape[0], np.float32)
+    for s in range(0, mag.shape[0], chunk):
+        band = mag[s:s + chunk, lo:].astype(np.float64) + 1e-10
+        out[s:s + chunk] = np.exp(np.mean(np.log(band), axis=1)) / np.mean(band, axis=1)
+    return out
+
+
 def fluctuating_part(mag: np.ndarray, time_size: int = 41) -> np.ndarray:
     """Magnitude minus its long-term (~0.5 s) per-bin median.
 

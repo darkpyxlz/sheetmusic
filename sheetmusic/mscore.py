@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import zipfile
+
+import numpy as np
 from dataclasses import dataclass, field
 from fractions import Fraction
 from xml.sax.saxutils import escape
@@ -61,78 +63,59 @@ class ScoreSpec:
         return WHOLE // self.time_den
 
 
-def _greedy(length: int, align_pos: int, max_len: int):
-    """Largest representable durations (aligned to their base value)."""
-    out = []
-    pos = align_pos
-    rem = length
-    while rem > 0:
-        for d, name, dots in _DURS:
-            if d > rem or d > max_len:
-                continue
-            base = d * 2 // 3 if dots else d
-            if pos % base == 0 or (pos + d) % base == 0:
-                out.append((d, name, dots))
-                pos += d
-                rem -= d
-                break
-        else:
-            # not representable on this grid: emit the smallest value
-            d = 30
-            out.append((d, "64th", 0))
-            pos += d
-            rem -= d
-    return out
-
-
 def split_duration(pos: int, length: int, measure: int, beat: int):
-    """Split [pos, pos+length) (positions within a measure) into notatable
-    pieces that do not obscure the beat."""
+    """Split [pos, pos+length) (positions within a measure) into as few
+    notatable values as possible (fewest ties).
+
+    A value may start on any multiple of half its undotted base value (so a
+    syncopated crotchet on the "and", a dotted crotchet after a quaver, a
+    semiquaver on a demisemiquaver ... are written as single notes); values of
+    two beats or longer must start on a beat so the bar stays readable.
+    """
     pieces = []
     end = pos + length
     while pos < end:
-        if pos % beat != 0:
-            nxt = min(end, (pos // beat + 1) * beat)
-            seg = nxt - pos
-            if seg in _DUR_BY_TICKS:  # fits inside one beat: any single value reads fine
-                n, k = _DUR_BY_TICKS[seg]
-                pieces.append((seg, n, k))
-            else:
-                pieces.extend(_greedy(seg, pos, beat))
-            pos = nxt
-            continue
-        rest = end - pos
-        if rest in _DUR_BY_TICKS and _DUR_BY_TICKS[rest][1] and pos % (rest * 2 // 3) == 0:
-            # dotted value starting on its own unit (dotted quarter on a beat...)
-            n, k = _DUR_BY_TICKS[rest]
-            pieces.append((rest, n, k))
-            pos = end
-            continue
-        whole_beats = (end - pos) // beat
-        if whole_beats > 0:
-            span = whole_beats * beat
-            # largest representable multiple of the beat
-            while span > 0 and span not in _DUR_BY_TICKS:
-                span -= beat
-            if span == 0:
-                span = beat
-                if span not in _DUR_BY_TICKS:
-                    pieces.extend(_greedy(beat, pos, beat))
-                    pos += beat
-                    continue
-            # a dotted value starting off its alignment is still fine on a beat
-            n, k = _DUR_BY_TICKS[span]
-            pieces.append((span, n, k))
-            pos += span
-            continue
-        seg = end - pos
-        if seg in _DUR_BY_TICKS:
-            n, k = _DUR_BY_TICKS[seg]
-            pieces.append((seg, n, k))
+        rem = end - pos
+        for d, name, dots in _DURS:
+            if d > rem or d > measure:
+                continue
+            base = d * 2 // 3 if dots else d
+            step = max(base // 2, 30)
+            if d >= 2 * beat:
+                step = max(step, beat)
+            if pos % step == 0:
+                pieces.append((d, name, dots))
+                pos += d
+                break
         else:
-            pieces.extend(_greedy(seg, pos, beat))
-        pos = end
+            pieces.append((30, "64th", 0))
+            pos += 30
     return pieces
+
+
+def assign_voices(notes: list[QNote], max_voices: int = 4) -> list[list[QNote]]:
+    """Distribute a staff's notes over MuseScore voices (1-4).
+
+    Notes that start and end together form a chord.  Each chord goes to the
+    first voice that is free at its start, higher chords first, so a long bass
+    note and moving chords above it are written with their real durations
+    instead of being chopped into tied pieces.  If all voices are busy the
+    chord is added to the voice that frees up first (it is then sliced and
+    tied there, losing nothing)."""
+    groups: dict[tuple[int, int], list[QNote]] = {}
+    for q in notes:
+        groups.setdefault((q.start, q.end), []).append(q)
+    chords = sorted(groups.items(), key=lambda kv: (kv[0][0], -max(n.pitch for n in kv[1])))
+    voices: list[list[QNote]] = [[] for _ in range(max_voices)]
+    ends = [0] * max_voices
+    for (st, en), ns in chords:
+        free = [v for v in range(max_voices) if ends[v] <= st]
+        v = free[0] if free else int(np.argmin(ends))
+        voices[v].extend(ns)
+        ends[v] = max(ends[v], en)
+    while len(voices) > 1 and not voices[-1]:
+        voices.pop()
+    return voices
 
 
 def _frac(ticks: int) -> str:
@@ -212,8 +195,45 @@ def _note_xml(pitch: int, key: int, tie_back: bool, tie_fwd: bool,
     return "".join(x)
 
 
-def _staff_xml(staff_id: int, measures, score: ScoreSpec, first_staff: bool) -> str:
+def _voice_measures_xml(measures, score: ScoreSpec, hidden_rests: bool) -> list[str]:
+    """XML content of one voice, one string per measure ('' = nothing in it)."""
     mt = score.measure_ticks
+    flat = [ev for events in measures for ev in events]
+    pitch_index = [{p: i for i, (p, *_r) in enumerate(ev[5])} for ev in flat]
+    vis = "<visible>0</visible>" if hidden_rests else ""
+    out = []
+    prev_tick = 0
+    k = -1
+    for events in measures:
+        parts = []
+        has_notes = any(ev[0] == "chord" for ev in events)
+        for kind, tick, dur, name, dots, nl in events:
+            k += 1
+            if kind == "mrest":
+                if not hidden_rests:
+                    parts.append(f"<Rest><durationType>measure</durationType>"
+                                 f"<duration>{score.time_num}/{score.time_den}</duration></Rest>")
+                prev_tick = tick
+                continue
+            dots_xml = f"<dots>{dots}</dots>" if dots else ""
+            if kind == "rest":
+                parts.append(f"<Rest>{vis}{dots_xml}<durationType>{name}</durationType></Rest>")
+            else:
+                here = pitch_index[k]
+                before = pitch_index[k - 1] if k > 0 else {}
+                after = pitch_index[k + 1] if k + 1 < len(flat) else {}
+                notes_xml = "".join(
+                    _note_xml(p, score.key_fifths, tb, tf, prev_tick, tick, tick + dur, mt,
+                              prev_dn=before.get(p, here[p]) - here[p],
+                              next_dn=after.get(p, here[p]) - here[p])
+                    for p, tb, tf, _v in nl)
+                parts.append(f"<Chord>{dots_xml}<durationType>{name}</durationType>{notes_xml}</Chord>")
+            prev_tick = tick
+        out.append("".join(parts) if (has_notes or not hidden_rests) else "")
+    return out
+
+
+def _staff_xml(staff_id: int, voices_measures, score: ScoreSpec, first_staff: bool) -> str:
     out = [f'<Staff id="{staff_id}">']
     if first_staff and (score.title or score.subtitle or score.composer):
         out.append("<VBox><height>10</height>")
@@ -224,12 +244,10 @@ def _staff_xml(staff_id: int, measures, score: ScoreSpec, first_staff: bool) -> 
         if score.composer:
             out.append(f"<Text><style>Composer</style><text>{escape(score.composer)}</text></Text>")
         out.append("</VBox>")
-    prev_tick = 0
-    n = len(measures)
-    flat = [ev for events in measures for ev in events]
-    pitch_index = [{p: i for i, (p, *_r) in enumerate(ev[5])} for ev in flat]
-    k = -1
-    for mi, events in enumerate(measures):
+    contents = [_voice_measures_xml(vm, score, hidden_rests=(v > 0))
+                for v, vm in enumerate(voices_measures)]
+    n = len(voices_measures[0])
+    for mi in range(n):
         out.append("<Measure><voice>")
         if mi == 0:
             out.append(f"<KeySig><accidental>{score.key_fifths}</accidental>"
@@ -242,30 +260,15 @@ def _staff_xml(staff_id: int, measures, score: ScoreSpec, first_staff: bool) -> 
                     score.time_den, "metNoteQuarterUp")
                 out.append(f"<Tempo><tempo>{qps:.6f}</tempo><followText>1</followText>"
                            f"<text><sym>{beat_sym}</sym> = {int(round(score.bpm))}</text></Tempo>")
-        for kind, tick, dur, name, dots, nl in events:
-            k += 1
-            if kind == "mrest":
-                out.append(f"<Rest><durationType>measure</durationType>"
-                           f"<duration>{score.time_num}/{score.time_den}</duration></Rest>")
-                prev_tick = tick
-                continue
-            dots_xml = f"<dots>{dots}</dots>" if dots else ""
-            if kind == "rest":
-                out.append(f"<Rest>{dots_xml}<durationType>{name}</durationType></Rest>")
-            else:
-                here = pitch_index[k]
-                before = pitch_index[k - 1] if k > 0 else {}
-                after = pitch_index[k + 1] if k + 1 < len(flat) else {}
-                notes_xml = "".join(
-                    _note_xml(p, score.key_fifths, tb, tf, prev_tick, tick, tick + dur, mt,
-                              prev_dn=before.get(p, here[p]) - here[p],
-                              next_dn=after.get(p, here[p]) - here[p])
-                    for p, tb, tf, _v in nl)
-                out.append(f"<Chord>{dots_xml}<durationType>{name}</durationType>{notes_xml}</Chord>")
-            prev_tick = tick
+        out.append(contents[0][mi])
         if mi == n - 1:
             out.append("<BarLine><subtype>end</subtype><span>1</span></BarLine>")
-        out.append("</voice></Measure>")
+        out.append("</voice>")
+        # further voices; empty ones are only written as placeholders before a used one
+        last_used = max([v for v in range(1, len(contents)) if contents[v][mi]] or [0])
+        for v in range(1, last_used + 1):
+            out.append("<voice>" + contents[v][mi] + "</voice>")
+        out.append("</Measure>")
     out.append("</Staff>")
     return "".join(out)
 
@@ -331,8 +334,9 @@ def score_to_mscx(score: ScoreSpec) -> str:
     sid = 1
     for p in score.parts:
         for st in p.staves:
-            measures = _staff_events(st.notes, n_measures, mt, score.beat_ticks)
-            body.append(_staff_xml(sid, measures, score, first_staff=(sid == 1)))
+            voices = assign_voices(st.notes) if st.notes else [[]]
+            vm = [_staff_events(v, n_measures, mt, score.beat_ticks) for v in voices]
+            body.append(_staff_xml(sid, vm, score, first_staff=(sid == 1)))
             sid += 1
     tail = ["</Score>", "</museScore>"]
     return "\n".join(head + body + tail) + "\n"

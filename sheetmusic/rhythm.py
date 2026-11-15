@@ -151,22 +151,41 @@ def downbeat_phase(bm: BeatMap, o: np.ndarray, fps: float, beats_per_bar: int,
     return int(np.argmax(scores))
 
 
+def snap(b: float, grid: int, tol_coarse: float = 0.12) -> float:
+    """Snap a beat position to the *coarsest* grid that is close enough.
+
+    Tries whole beats, then halves, quarters, eighths ... up to ``grid``
+    subdivisions per beat.  A position is snapped to a coarse grid when it is
+    within ``tol`` of it, where ``tol`` shrinks with the subdivision; the
+    finest grid always matches.  So a note sung 50 ms late still lands on the
+    beat, while genuinely fast or off-beat notes get 16ths / 32nds."""
+    g = 1
+    while g < grid:
+        q = round(b * g) / g
+        tol = tol_coarse if g <= 2 else min(tol_coarse, 0.36 / g)
+        if abs(b - q) <= tol:
+            return q
+        g *= 2
+    return round(b * grid) / grid
+
+
 def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat: int,
-             grid: int, monophonic: bool = False, fill_gaps: int = 0,
-             min_units: int = 1) -> list[QNote]:
-    """Quantise notes to ``grid`` subdivisions per beat.
+             grid: int, monophonic: bool = False, fill_gaps: float = 0.0,
+             min_units: int = 1, snap_tol: float = 0.12) -> list[QNote]:
+    """Quantise notes adaptively, down to ``grid`` subdivisions per beat
+    (8 = demisemiquavers in x/4).
 
     ``beat_offset`` is added to the beat position so that the first downbeat
-    lands on a barline.  ``fill_gaps`` (in grid units) extends a note to the
-    next one if the rest in between would be at most that long (legato).
+    lands on a barline.  ``fill_gaps`` (in beats) extends a note to the next
+    one if the rest in between would be at most that long (legato).
     """
     unit = ticks_per_beat // grid
     out: list[QNote] = []
     for n in notes:
         b0 = float(bm.to_beats(n.start)) + beat_offset
         b1 = float(bm.to_beats(n.end)) + beat_offset
-        s = int(round(b0 * grid))
-        e = int(round(b1 * grid))
+        s = int(round(snap(b0, grid, snap_tol) * grid))
+        e = int(round(snap(b1, grid, snap_tol * 1.5) * grid))
         if e - s < min_units:
             # keep short notes only if they were at least ~half a unit long
             if (b1 - b0) * grid >= 0.5 * min_units:
@@ -176,6 +195,7 @@ def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat:
         if s < 0:
             continue
         out.append(QNote(s * unit, e * unit, n.pitch, n.velocity))
+    gap_ticks = int(round(fill_gaps * ticks_per_beat))
     out.sort(key=lambda q: (q.start, q.pitch))
     if monophonic:
         mono: list[QNote] = []
@@ -192,7 +212,7 @@ def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat:
         out = mono
         if fill_gaps > 0:
             for a, b in zip(out[:-1], out[1:]):
-                if 0 < b.start - a.end <= fill_gaps * unit:
+                if 0 < b.start - a.end <= gap_ticks:
                     a.end = b.start
     else:
         # merge overlapping same-pitch notes
@@ -203,7 +223,7 @@ def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat:
             if last is not None and q.start < last.end:
                 last.end = max(last.end, q.end)
                 continue
-            if last is not None and fill_gaps > 0 and 0 < q.start - last.end <= fill_gaps * unit:
+            if last is not None and 0 < q.start - last.end <= gap_ticks:
                 last.end = q.start
             merged[q.pitch] = q
             res.append(q)

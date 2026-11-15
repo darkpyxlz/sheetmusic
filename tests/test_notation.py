@@ -3,8 +3,9 @@ import xml.etree.ElementTree as ET
 
 from sheetmusic.keys import estimate_key, spell, tpc_name
 from sheetmusic.midi import write_midi
-from sheetmusic.mscore import (PartSpec, ScoreSpec, StaffSpec, score_to_mscx,
-                               split_duration, write_mscz)
+from sheetmusic.mscore import (PartSpec, ScoreSpec, StaffSpec, _staff_events, _staff_xml,
+                               assign_voices, score_to_mscx, split_duration, write_mscz)
+from sheetmusic.rhythm import snap
 from sheetmusic.notes import QNote
 from sheetmusic.pipeline import _parse_key
 
@@ -14,8 +15,13 @@ def test_split_duration_simple_values():
     assert split_duration(0, 720, 1920, 480) == [(720, "quarter", 1)]       # dotted quarter
     assert split_duration(0, 1920, 1920, 480) == [(1920, "whole", 0)]
     assert split_duration(0, 1440, 1920, 480) == [(1440, "half", 1)]
-    # syncopation across a beat is split at the beat
-    assert split_duration(240, 480, 1920, 480) == [(240, "eighth", 0), (240, "eighth", 0)]
+    # a syncopated crotchet on the "and" is one note, not two tied quavers
+    assert split_duration(240, 480, 1920, 480) == [(480, "quarter", 0)]
+    assert split_duration(240, 720, 1920, 480) == [(720, "quarter", 1)]
+    # demisemiquavers
+    assert split_duration(60, 60, 1920, 480) == [(60, "32nd", 0)]
+    # long values start on a beat
+    assert split_duration(240, 1200, 1920, 480)[0][0] < 960
 
 
 def test_split_duration_sums():
@@ -40,23 +46,40 @@ def test_mscx_is_well_formed_and_measures_are_full():
     durs = {"whole": 1920, "half": 960, "quarter": 480, "eighth": 240, "16th": 120, "32nd": 60, "64th": 30}
     for st in staves:
         for m in st.findall("Measure"):
-            total = 0
-            for el in m.find("voice"):
-                if el.tag in ("Chord", "Rest"):
-                    dt = el.findtext("durationType")
-                    if dt == "measure":
-                        total += 1920
-                        continue
-                    d = durs[dt]
-                    dots = int(el.findtext("dots") or 0)
-                    total += d + (d // 2 if dots else 0)
-            assert total == 1920
+            for voice in m.findall("voice"):
+                total = 0
+                for el in voice:
+                    if el.tag in ("Chord", "Rest"):
+                        dt = el.findtext("durationType")
+                        if dt == "measure":
+                            total += 1920
+                            continue
+                        d = durs[dt]
+                        dots = int(el.findtext("dots") or 0)
+                        total += d + (d // 2 if dots else 0)
+                assert total in (0, 1920)
+
+
+def test_long_note_under_moving_notes_uses_voices_not_ties():
+    notes = [QNote(0, 1920, 43)] + [QNote(i * 240, i * 240 + 240, 55 + i) for i in range(8)]
+    voices = assign_voices(notes)
+    assert len(voices) == 2
+    xml = score_to_mscx(_score([], notes))
+    assert "<Tie/>" not in xml
+    assert "<durationType>whole</durationType>" in xml
+
+
+def test_adaptive_snap():
+    assert snap(1.04, 8) == 1.0          # slightly late note -> on the beat
+    assert snap(1.52, 8) == 1.5
+    assert snap(1.125, 8) == 1.125       # a real demisemiquaver position stays
 
 
 def test_ties_carry_chord_note_index():
     # 59 is the 2nd note of a chord, then the only note of the next chord
     notes = [QNote(960, 1200, 55), QNote(960, 1920, 59)]
-    xml = score_to_mscx(_score(notes))
+    sc = _score(notes)
+    xml = _staff_xml(1, [_staff_events(notes, 1, 1920, 480)], sc, False)
     assert "<notes>-1</notes>" in xml and "<notes>1</notes>" in xml
 
 

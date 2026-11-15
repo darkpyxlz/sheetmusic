@@ -30,9 +30,10 @@ class TranscribeOptions:
     # vocal handling
     remove_voice_from_accompaniment: bool = True
     voicing_threshold: float = 0.3
+    voice_strictness: float = 0.72  # 0 = keep every tracked note
     fluctuation_weight: float = 0.5  # 0 = off; weight of the vibrato/fluctuation cue
     octave_correction: bool = True
-    melody_range: tuple[float, float] = (38, 86)
+    melody_range: tuple[float, float] = (45, 86)
     min_melody_note: float = 0.09
     # accompaniment
     max_polyphony: int = 5
@@ -43,11 +44,12 @@ class TranscribeOptions:
     # rhythm / notation
     bpm: float | None = None
     time_signature: tuple[int, int] = (4, 4)
-    melody_grid: int = 4             # subdivisions per beat (4 = 16ths in x/4)
-    accomp_grid: int = 2             # 2 = 8ths in x/4
+    melody_grid: int = 8             # finest subdivision per beat (8 = 32nds in x/4)
+    accomp_grid: int = 8             # adaptive: coarser values are used when they fit
     tuning: float | None = None      # cents; None = auto
     key: str | None = None           # e.g. "G", "Eb", "F#m"; None = auto
     split_point: int = 60            # piano: >= split -> treble staff
+    key_filter: bool = True          # drop weak, short out-of-key accompaniment notes
     title: str | None = None
     verbose: bool = True
 
@@ -116,12 +118,15 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
             # (vibrato / expressive pitch) over rock-steady sustained ones
             # (piano, pads, organ): two-stage HPSS (Tachibana et al. 2010)
             vspec = F.center * hmask
-            vflat = F.flatness
+            # noisiness of the *drum-free* vocal spectrum: consonants and
+            # breaths are unvoiced, but a snare hit under a held note is not
+            vflat = spectral.flatness(vspec, df)
         if opts.fluctuation_weight > 0:
             fspec = spectral.fluctuating_part(vspec, time_size=41)
         else:
             fspec = None
         track = melody.track_melody(vspec, df, fps, vflat, ref_hz=ref_hz, fluct_spec=fspec,
+                                    mono_spec=(F.mono * hmask) if vocals is None else None,
                                     fluct_weight=opts.fluctuation_weight,
                                     midi_lo=opts.melody_range[0], midi_hi=opts.melody_range[1],
                                     voicing_threshold=opts.voicing_threshold)
@@ -131,7 +136,10 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                                        np.pad(track.midi, (0, pad), constant_values=np.nan),
                                        np.pad(track.salience, (0, pad)),
                                        np.pad(track.voiced, (0, pad)))
-        mel_notes = melody.segment_melody(track, fps, min_note=opts.min_melody_note)
+        onset_mix = rhythm.onset_envelope(F.flux, fps)
+        mel_notes = melody.segment_melody(track, fps, min_note=opts.min_melody_note,
+                                          onset=onset_mix,
+                                          voice_strictness=opts.voice_strictness)
         if opts.octave_correction:
             mel_notes = melody.fix_octave_errors(mel_notes)
         mel_notes = melody.snap_onsets(mel_notes, rhythm.onset_envelope(F.flux, fps), fps)
@@ -189,10 +197,16 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
     _log(opts, f"  tempo ~ {bm.bpm:.1f} BPM, {bm.beat_times.size} beats, downbeat phase {phase}")
 
     tpb = 4 * 480 // den
-    mel_q = rhythm.quantize(mel_notes, bm, offset, tpb, opts.melody_grid, monophonic=True,
-                            fill_gaps=1)
-    acc_q = rhythm.quantize(acc_notes, bm, offset, tpb, opts.accomp_grid, monophonic=False,
-                            fill_gaps=0)
+    # never finer than a 64th note (30 ticks)
+    mgrid = max(1, min(opts.melody_grid, tpb // 30))
+    agrid = max(1, min(opts.accomp_grid, tpb // 30))
+    mel_q = rhythm.quantize(mel_notes, bm, offset, tpb, mgrid, monophonic=True,
+                            fill_gaps=0.25)
+    # accompaniment onsets are smeared (strums, arpeggios, long STFT windows):
+    # snap them harder so chords line up instead of scattering into 32nds
+    acc_q = rhythm.quantize(acc_notes, bm, offset, tpb, agrid, monophonic=False,
+                            fill_gaps=0.25, snap_tol=0.18,
+                            min_units=max(1, agrid // 4))  # nothing shorter than a 16th
 
     # ---------------- key ----------------
     if opts.key:
@@ -201,6 +215,8 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
     else:
         fifths, mode, key_name = estimate_key([mel_q, acc_q], [2.0, 1.0])
     _log(opts, f"  key: {key_name}")
+    if opts.key_filter:
+        acc_q = _drop_weak_out_of_key(acc_q, fifths, mode, tpb)
 
     # ---------------- score ----------------
     parts = []
@@ -226,6 +242,21 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
     _log(opts, f"Done in {info['seconds']:.1f} s: {len(mel_q)} melody notes, "
                f"{len(acc_q)} accompaniment notes")
     return Transcription(score, mel_q, acc_q, info, track, mel_notes, acc_notes)
+
+
+def _drop_weak_out_of_key(notes: list[QNote], fifths: int, mode: str, tpb: int) -> list[QNote]:
+    """Remove accompaniment notes that are outside the key's scale *and* both
+    quieter than typical and shorter than a beat - in practice these are
+    analysis artefacts (reverb, beating, drum tones), not real chromaticism."""
+    if not notes:
+        return notes
+    tonic_major = (fifths * 7) % 12
+    scale = {(tonic_major + i) % 12 for i in (0, 2, 4, 5, 7, 9, 11)}
+    if mode == "minor":
+        scale |= {(tonic_major + 7) % 12 + 0, (tonic_major + 8) % 12}  # raised 6th/7th of minor
+    med_v = float(np.median([q.velocity for q in notes]))
+    return [q for q in notes
+            if q.pitch % 12 in scale or q.velocity >= med_v or q.end - q.start >= tpb]
 
 
 def _first_onset(notes: list[Note]) -> float:

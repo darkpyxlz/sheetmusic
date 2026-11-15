@@ -48,6 +48,7 @@ class MelodyTrack:
     salience: np.ndarray  # (T,) harmonic salience along the path
     voiced: np.ndarray    # (T,) bool
     fluct_salience: np.ndarray | None = None  # (T,) salience of the fluctuating part
+    centre_ratio: np.ndarray | None = None    # (T,) how centre-panned the tracked partials are
 
 
 def _viterbi_pitch(logp: np.ndarray, step_semitones: float, jump_cost: float,
@@ -75,6 +76,7 @@ def track_melody(spec: np.ndarray, df: float, fps: float, flatness: np.ndarray,
                  step_cents: float = 20.0, jump_cost: float = 0.35,
                  voicing_threshold: float = 0.3, flatness_max: float = 0.35,
                  fluct_spec: np.ndarray | None = None, fluct_weight: float = 0.5,
+                 mono_spec: np.ndarray | None = None,
                  chunk: int = 2048) -> MelodyTrack:
     """Track the predominant (vocal) f0 in ``spec`` (T, K) magnitude.
 
@@ -146,7 +148,22 @@ def track_melody(spec: np.ndarray, df: float, fps: float, flatness: np.ndarray,
 
     f0 = np.where(voiced, midi_to_hz(midi, ref_hz), 0.0)
     midi_out = np.where(voiced, midi, np.nan)
-    return MelodyTrack(f0=f0, midi=midi_out, salience=sal, voiced=voiced, fluct_salience=fsal)
+    ctr = None
+    if mono_spec is not None:
+        # energy of the tracked harmonic series in the centre-weighted spectrum
+        # relative to the plain mix: ~1 for a centre-panned lead vocal, lower
+        # for panned guitars / keys that fill the gaps between vocal phrases
+        f_path = midi_to_hz(midi, ref_hz)
+        H = np.arange(1, 9)
+        bins = np.round(f_path[:, None] * H[None, :] / df).astype(int)
+        ok = bins < K - 1
+        bins = np.clip(bins, 0, K - 1)
+        rows = np.arange(T)[:, None]
+        c = np.where(ok, spec[rows, bins], 0).sum(axis=1)
+        m = np.where(ok, mono_spec[rows, bins], 0).sum(axis=1)
+        ctr = np.clip(c / (m + 1e-9), 0, 1.5).astype(np.float32)
+    return MelodyTrack(f0=f0, midi=midi_out, salience=sal, voiced=voiced, fluct_salience=fsal,
+                       centre_ratio=ctr)
 
 
 def _runs(mask: np.ndarray):
@@ -176,7 +193,9 @@ def _fill_short_gaps(mask: np.ndarray, max_gap: int) -> np.ndarray:
 def segment_melody(track: MelodyTrack, fps: float, min_note: float = 0.09,
                    vibrato_window: float = 0.16, change_cost: float = 9.0,
                    sigma: float = 0.33, gap_fill: float = 0.05,
-                   reattack_ratio: float = 0.35) -> list[Note]:
+                   reattack_ratio: float = 0.2, passing_max: float = 0.16,
+                   onset: np.ndarray | None = None,
+                   voice_strictness: float = 0.72) -> list[Note]:
     """Turn the continuous vocal contour into discrete notes.
 
     * gaps < ``gap_fill`` s (e.g. short consonants) are bridged;
@@ -187,8 +206,12 @@ def segment_melody(track: MelodyTrack, fps: float, min_note: float = 0.09,
       chromatic runs);
     * segments shorter than ``min_note`` are merged into the neighbour with
       the closest pitch;
+    * short notes between two neighbours' pitches (slides / portamento) are
+      absorbed into the note they lead to, scoops and fall-offs likewise;
     * repeated notes on the same pitch are split where the vocal energy dips
-      (re-articulation).
+      together with an attack in the onset envelope (re-articulation);
+    * notes / phrases that do not look like the voice (steady and/or not
+      centre-panned: instrumental intros, riffs, fills) are dropped.
     """
     voiced = _fill_short_gaps(track.voiced, int(round(gap_fill * fps)))
     midi = track.midi.copy()
@@ -207,7 +230,8 @@ def segment_melody(track: MelodyTrack, fps: float, min_note: float = 0.09,
     sal_ref = float(np.percentile(act, 90)) if act.size else 1.0
     min_len = max(2, int(round(min_note * fps)))
     win = max(1, int(round(vibrato_window * fps)))
-    for s, e in _runs(voiced):
+    cand = []   # [start_frame, end_frame, pitch, phrase_id]
+    for ph, (s, e) in enumerate(_runs(voiced)):
         if e - s < min_len:
             continue
         raw = midi[s:e]
@@ -224,27 +248,109 @@ def segment_melody(track: MelodyTrack, fps: float, min_note: float = 0.09,
                 pitched[-1][1] = b
             else:
                 pitched.append([a, b, p])
+        pitched = _absorb_passing_tones(pitched, int(round(passing_max * fps)))
+        _refine_legato_boundaries(pitched, raw, win)
         for a0, b0, p in pitched:
-            for a, b in _split_reattacks([(a0, b0)], sal, min_len, reattack_ratio):
-                if not _plausible_voice(s + a, s + b, track, sal_ref):
-                    continue
-                notes.append(Note(start=(s + a) / fps, end=(s + b) / fps, pitch=p,
-                                  velocity=_velocity(sal[a:b], track.salience)))
+            for a, b in _split_reattacks([(a0, b0)], sal, min_len, reattack_ratio,
+                                         None if onset is None else onset[s:e]):
+                cand.append([s + a, s + b, p, ph])
+    keep = _vocal_likeness_filter(cand, track, sal_ref, voice_strictness)
+    for a, b, p, _ph in keep:
+        notes.append(Note(start=a / fps, end=b / fps, pitch=p,
+                          velocity=_velocity(track.salience[a:b], track.salience)))
     return notes
 
 
-def _plausible_voice(a: int, b: int, track: MelodyTrack, sal_ref: float) -> bool:
-    """Contour-level check: reject weak *and* perfectly steady segments.
+def _refine_legato_boundaries(pitched, raw, search):
+    """Move the boundary between two slurred notes to where the *unsmoothed*
+    contour first gets closer to the new pitch (the smoothing and the HMM's
+    switching cost otherwise make legato notes start late)."""
+    for i in range(len(pitched) - 1):
+        a0, b0, p0 = pitched[i]
+        a1, b1, p1 = pitched[i + 1]
+        if b0 != a1 or p0 == p1:
+            continue
+        lo = max(a0 + 1, b0 - search)
+        hi = min(b1 - 1, b0 + search)
+        seg = raw[lo:hi]
+        if seg.size == 0:
+            continue
+        closer = np.abs(seg - p1) < np.abs(seg - p0)
+        # first frame from which the contour stays (mostly) on the new note
+        for k in range(seg.size):
+            if closer[k] and closer[k:k + 4].mean() >= 0.75:
+                t = lo + k
+                pitched[i][1] = t
+                pitched[i + 1][0] = t
+                break
 
-    Those are typically an accompaniment instrument that the tracker latched
-    onto between vocal phrases.  Loud steady segments are kept (straight-tone
-    or auto-tuned singing)."""
-    if track.fluct_salience is None:
-        return True
-    sal = track.salience[a:b]
-    fr = float(np.mean(track.fluct_salience[a:b] / (sal + 1e-9)))
-    level = float(np.mean(sal)) / (sal_ref + 1e-12)
-    return not (fr < 0.4 and level < 0.55)
+
+def _absorb_passing_tones(pitched, max_len):
+    """A short note lying between its neighbours' pitches inside a legato
+    phrase is the singer sliding from one note to the next, not a note: give
+    its time to the note it slides into."""
+    out = [list(x) for x in pitched]
+    i = 1
+    while i < len(out) - 1:
+        a, b, p = out[i]
+        lo, hi = sorted((out[i - 1][2], out[i + 1][2]))
+        if b - a <= max_len and lo < p < hi:
+            out[i + 1][0] = a
+            del out[i]
+            continue
+        i += 1
+    # a short first note just below/above the next one = scoop into it
+    if len(out) >= 2 and out[0][1] - out[0][0] <= max_len and abs(out[0][2] - out[1][2]) <= 2:
+        out[1][0] = out[0][0]
+        del out[0]
+    # a short last note close to the previous one = fall-off at the end
+    if len(out) >= 2 and out[-1][1] - out[-1][0] <= max_len and abs(out[-1][2] - out[-2][2]) <= 2:
+        out[-2][1] = out[-1][1]
+        del out[-1]
+    return out
+
+
+def _vocal_likeness_filter(cand, track: MelodyTrack, sal_ref: float, strictness: float):
+    """Remove notes that come from instruments rather than the singer.
+
+    Each note gets a 'voice-likeness' score = fluctuation ratio (pitch/partial
+    movement, see ``spectral.fluctuating_part``) x centre-panning ratio of its
+    harmonic series.  Whole phrases (voiced runs) whose score is clearly below
+    the song's typical vocal score are dropped - this removes instrumental
+    intros, riffs and fills between vocal lines - and then single notes that
+    are far below it.  The threshold is relative to the song itself, so
+    recordings with wide stereo reverb on the voice are not penalised.
+    """
+    if not cand or track.fluct_salience is None or strictness <= 0:
+        return cand
+    scores, durs, levels = [], [], []
+    for a, b, _p, _ph in cand:
+        sal = track.salience[a:b]
+        fr = float(np.clip(np.mean(track.fluct_salience[a:b] / (sal + 1e-9)), 0, 1.2))
+        ctr = 1.0 if track.centre_ratio is None else float(np.mean(track.centre_ratio[a:b]))
+        scores.append(fr * min(ctr, 1.0) ** 1.5)
+        durs.append(b - a)
+        levels.append(float(np.mean(sal)) / (sal_ref + 1e-12))
+    scores = np.array(scores)
+    durs = np.array(durs, float)
+    # typical score of the vocal: duration-weighted upper quartile
+    order = np.argsort(scores)
+    cw = np.cumsum(durs[order]) / durs.sum()
+    typical = float(scores[order][np.searchsorted(cw, 0.75)])
+    thr = strictness * typical
+    phrase_ids = sorted({c[3] for c in cand})
+    phrase_score = {}
+    for ph in phrase_ids:
+        idx = [i for i, c in enumerate(cand) if c[3] == ph]
+        phrase_score[ph] = float(np.average(scores[idx], weights=durs[idx]))
+    keep = []
+    for i, c in enumerate(cand):
+        if phrase_score[c[3]] < thr:
+            continue
+        if scores[i] < 0.75 * thr and levels[i] < 0.9:
+            continue
+        keep.append(c)
+    return keep
 
 
 def fix_octave_errors(notes: list[Note], max_dev: int = 9, ok_dev: int = 5) -> list[Note]:
@@ -271,22 +377,28 @@ def fix_octave_errors(notes: list[Note], max_dev: int = 9, ok_dev: int = 5) -> l
 
 
 def snap_onsets(notes: list[Note], onset_env: np.ndarray, fps: float,
-                before: float = 0.15, after: float = 0.03, min_strength: float = 0.8) -> list[Note]:
+                before: float = 0.15, after: float = 0.03, min_strength: float = 0.8,
+                min_keep: float = 0.06) -> list[Note]:
     """Move note starts back to the attack (consonant / onset) preceding the
-    voiced part, since voicing detection only fires once the vowel is stable."""
+    voiced part, since voicing and pitch-change detection fire only once the
+    vowel is stable.  If the previous note runs into that attack (legato),
+    it is shortened accordingly."""
     o = onset_env
     peaks = np.nonzero((o[1:-1] > o[:-2]) & (o[1:-1] >= o[2:]) & (o[1:-1] > min_strength))[0] + 1
     tp = peaks / fps
-    out = []
-    prev_end = -1.0
+    out: list[Note] = []
     for n in notes:
-        cand = tp[(tp >= n.start - before) & (tp <= n.start + after) & (tp > prev_end - 0.02)]
+        lo = n.start - before
+        if out:
+            lo = max(lo, out[-1].start + min_keep)
+        cand = tp[(tp >= lo) & (tp <= n.start + after)]
         s = n.start
         if cand.size:
             s = float(cand[np.argmin(np.abs(cand - (n.start - 0.05)))])
         s = min(s, n.end - 0.03)
+        if out and out[-1].end > s:
+            out[-1].end = s
         out.append(Note(s, n.end, n.pitch, n.velocity))
-        prev_end = n.end
     return out
 
 
@@ -356,24 +468,47 @@ def _merge_short(runs, raw, min_len):
     return [(a, b) for a, b, _ in merged]
 
 
-def _split_reattacks(segs, sal, min_len, ratio):
+def _split_reattacks(segs, sal, min_len, ratio, onset=None, soft_ratio: float = 0.5):
+    """Split same-pitch segments where the voice re-articulates.
+
+    A cut needs either a deep dip of the (vibrato-smoothed) vocal salience, or
+    a moderate dip of the lightly smoothed salience that coincides with an
+    attack in the onset envelope (the consonant of the next syllable)."""
     out = []
     # smooth over ~ one vibrato period: vibrato sweeping the harmonics through
     # the formants causes amplitude modulation that must not look like a re-attack
     sm = uniform_filter1d(sal.astype(float), size=max(5, int(round(min_len * 1.8))), mode="nearest")
+    light = uniform_filter1d(sal.astype(float), size=3, mode="nearest")
+    if onset is not None:
+        o = onset
+        opk = np.zeros(o.size, bool)
+        if o.size > 2:
+            opk[1:-1] = (o[1:-1] > o[:-2]) & (o[1:-1] >= o[2:]) & (o[1:-1] > 1.0)
     for a, b in segs:
         cuts = [a]
         if b - a >= 2 * min_len:
             x = sm[a:b]
+            y = light[a:b]
             for t in range(min_len, b - a - min_len):
+                if a + t - cuts[-1] < min_len:
+                    continue
                 if x[t] <= x[t - 1] and x[t] < x[t + 1]:
                     left = x[max(0, t - 3 * min_len):t].max()
                     right = x[t + 1:t + 1 + 3 * min_len].max()
-                    if x[t] < ratio * min(left, right) and (a + t - cuts[-1]) >= min_len:
+                    if x[t] < ratio * min(left, right):
                         cuts.append(a + t)
+                        continue
+                if onset is not None and y[t] <= y[t - 1] and y[t] < y[t + 1]:
+                    left = y[max(0, t - min_len):t].max()
+                    right = y[t + 1:t + 1 + min_len].max()
+                    if y[t] < soft_ratio * min(left, right):
+                        w = opk[a + t - 2:a + t + 5]
+                        if w.any():
+                            cuts.append(a + t - 2 + int(np.argmax(w)))
         cuts.append(b)
         for i in range(len(cuts) - 1):
-            out.append((cuts[i], cuts[i + 1]))
+            if cuts[i + 1] > cuts[i]:
+                out.append((cuts[i], cuts[i + 1]))
     return out
 
 

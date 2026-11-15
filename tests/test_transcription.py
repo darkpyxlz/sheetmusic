@@ -12,8 +12,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from evaluate import evaluate  # noqa: E402
+from evaluate import evaluate, rhythm_exactness  # noqa: E402
 from synth import make_song, write_mp3  # noqa: E402
+from synth_hard import make_hard_song  # noqa: E402
 
 from sheetmusic import TranscribeOptions, transcribe  # noqa: E402
 
@@ -35,6 +36,9 @@ def test_vocal_melody_and_accompaniment(song):
     mel = evaluate(r.melody_notes, truth["melody"])
     acc = evaluate(r.accomp_notes, truth["accomp"])
     assert mel["f"] >= 0.9, mel
+    # the written rhythm must be exactly right, not just "close"
+    rx = rhythm_exactness(r.melody_notes, truth["melody"], mel["shift"])
+    assert rx["onset_and_duration_exact"] >= 0.9, rx
     assert acc["f"] >= 0.6, acc
     assert abs(r.info["bpm"] - truth["bpm"]) < 3
     assert r.info["key"] == "G major"
@@ -88,3 +92,23 @@ def test_musescore_opens_file_without_repairs(song, tmp_path):
     log = p.stdout + p.stderr
     assert (tmp_path / "out.musicxml").exists(), log
     assert "broken connectors" not in log, log
+
+
+@needs_ffmpeg
+def test_hard_song_no_instrument_notes_in_voice_staff(tmp_path):
+    """Instrumental intro riff, guitar/bass in the gaps, reverb, slides,
+    backing vocals, snare on 2 & 4 and tempo drift."""
+    mix, truth = make_hard_song()
+    path = str(tmp_path / "hard.mp3")
+    write_mp3(path, mix)
+    r = transcribe(path, TranscribeOptions(verbose=False))
+    mel = evaluate(r.melody_notes, truth["melody"], max_shift_beats=16)
+    assert mel["precision"] >= 0.8 and mel["recall"] >= 0.8, mel
+    rx = rhythm_exactness(r.melody_notes, truth["melody"], mel["shift"])
+    assert rx["onset_exact"] >= 0.8 and rx["onset_and_duration_exact"] >= 0.7, rx
+    # nothing from the 2-bar instrumental intro may end up in the voice staff
+    first = min(q.start for q in r.melody_notes) / 480
+    assert first >= mel["shift"] + 0.5, (first, mel)
+    # notation: not "everything is a quaver"
+    durs = {q.end - q.start for q in r.melody_notes}
+    assert len(durs) >= 4
