@@ -384,8 +384,9 @@ def _drop_weak_out_of_key(notes: list[QNote], fifths: int, mode: str, tpb: int) 
 def _tune_into_right_hand(tune: list[QNote], piano: list[QNote]) -> list[QNote]:
     """Piano-solo version of a song: the sung line becomes the top of the
     right hand.  A low (male) tune is played an octave up, where a right hand
-    plays; piano notes at or above the tune while it sounds would hide it and
-    are left out."""
+    plays.  Piano notes at or above the tune while it sounds would hide it,
+    and notes a semitone below it are almost always the voice leaking into the
+    accompaniment analysis (vibrato, scoops): both are left out."""
     shift = 12 if np.median([q.pitch for q in tune]) < 60 else 0
     t = [QNote(q.start, q.end, q.pitch + shift, max(q.velocity, 100), False, 1) for q in tune]
     starts = np.array([q.start for q in t])
@@ -395,7 +396,7 @@ def _tune_into_right_hand(tune: list[QNote], piano: list[QNote]) -> list[QNote]:
     kept = []
     for q in piano:
         i = int(np.searchsorted(starts, q.end))          # tune notes starting before q ends
-        hidden = any(x.end > q.start and q.pitch >= x.pitch for x in t[max(0, i - 8):i])
+        hidden = any(x.end > q.start and q.pitch >= x.pitch - 1 for x in t[max(0, i - 8):i])
         if not hidden:
             kept.append(q)
     return sorted(kept + t, key=lambda q: (q.start, q.pitch))

@@ -20,17 +20,26 @@ How accurate it is on real recordings, measured, is in "Accuracy, honestly" belo
 
 ![example](examples/synthetic_song.png)
 
-*Output for the synthetic test song in `tests/synth.py`. The "singer" there is made
-hard to transcribe on purpose: a weak fundamental, vowel formants that change on
-every note, vibrato, pitch scoops into each note, and consonant noise. Behind it are
-piano chords that double the voice an octave lower, plus bass and drums. The voice
-line comes out note-for-note correct.*
+*Output for the synthetic test song in `tests/synth.py`, default settings. The
+"singer" there is made hard to transcribe on purpose: a weak fundamental, vowel
+formants that change on every note, vibrato, pitch scoops into each note, and
+consonant noise. Behind it are piano chords that double the voice an octave lower,
+plus bass and drums. The voice line comes out right except for one extra semiquaver
+where the second phrase starts (bar 5). The piano part is the weaker half: it still
+has stray notes where the voice leaks into it.*
+
+![easy piano solo](examples/synthetic_song_easy_solo.png)
+
+*The same song as an easy piano solo: `--mode accompaniment --melody-in-piano
+--arrangement easy`. The sung tune is the right hand's top line; the left hand plays
+the bass in minims.*
 
 ![instrumental example](examples/instrumental_waltz.png)
 
 *An instrumental piano waltz (`tests/synth_instr.py`). The program detected on its
 own that there are no vocals, that it is in 3/4 at 133 BPM, and that it is in
-F major, then transcribed it as a piano score.*
+F major, then wrote it as a playable piano score. (The synthetic piece's
+accompaniment simply stops before its tune does.)*
 
 ## Install
 
