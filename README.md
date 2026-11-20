@@ -67,10 +67,18 @@ python -m sheetmusic song.mp3 --info-json song.json # what was detected, and how
 The program prints what it detected, e.g.
 
 ```
-  no vocals: instrumental transcription (timbre var 0.27, wobble 24.4, movement 0.76)
-  time signature 6/8, tempo ~ 66.4 dotted-crotchets per minute, 50 beats
-  key: A minor
+  no vocals: instrumental transcription (timbre var 0.442, wobble 49.61, movement 0.907, centre 1.0, range 15.5)
+  time signature 12/8, tempo ~ 107.7 dotted-crotchets per minute, 32 beats (metre confidence +0.23)
+  key: D major
+  playable arrangement: 74 of 74 piano notes kept
 ```
+
+(a fiddle jig; it is written in 6/8, so the detector chose twice the bar length here:
+the note values are right, the barlines come every second bar). The metre confidence
+is the margin over the best different metre. On the development pieces, when it was
+below +0.05 the time signature was right only 9 times in 16; above +0.4 the
+simple/compound choice was right 17 times in 18. When it is low, check the metre;
+`--time-signature` settles it.
 
 Open the `.mscz` in **MuseScore 3 or 4**. The file uses the MuseScore 3.01 format,
 which both versions read; MuseScore 4 may offer to update the layout style when it opens.

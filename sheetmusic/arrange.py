@@ -15,7 +15,9 @@ what one pair of hands can play:
   ``left_gap`` apart, and there are no more than ``max_rate`` onsets per
   second in a hand at the piece's tempo, so a fast tremolo or strum becomes
   one chord;
-* the hands keep to their side: left below right.
+* the hands keep to their side: left below right;
+* a lone weak blip (shortest value, nothing else in that hand within a beat)
+  is left out: it is an artefact of the analysis, not a note anyone played.
 
 What stays is decided by importance: the top note of the right hand (the
 tune) and the bottom note of the left hand (the bass) are kept first, then
@@ -114,6 +116,23 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
             work[key] = QNote(s, max(e, old.end if old else e), q.pitch, q.velocity, q.struck, hand)
         else:
             old.end = max(old.end, e)
+    # ---- 1b. a lone blip is an artefact, not music: a note that would be
+    # written at the shortest value, with nothing else in its hand within a
+    # beat before or after it, and weaker than the hand's typical note (real
+    # fast notes come in runs, figures or chords)
+    for hand in (LEFT, RIGHT):
+        hn = sorted((q for q in work.values() if q.hand == hand), key=lambda q: q.start)
+        if len(hn) < 4:
+            continue
+        med = float(np.median([q.velocity for q in hn]))
+        starts = np.array([q.start for q in hn])
+        for q in hn:
+            if q.end - q.start > grid or q.velocity >= med:
+                continue
+            lo = np.searchsorted(starts, q.start - beat_ticks)
+            hi = np.searchsorted(starts, q.end + beat_ticks, side="right")
+            if hi - lo <= 1:
+                del work[(hand, q.start, q.pitch)]
     groups: dict[tuple[int, int], list[QNote]] = {}
     for q in work.values():
         groups.setdefault((q.hand, q.start), []).append(q)
@@ -202,19 +221,30 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
             if n is not None and q.end < n and n - q.start <= max(legato, q.end - q.start + grid):
                 q.end = n
             q.end = max(q.end, q.start + grid)
+        # when a new onset would exceed the hand's limits together with what is
+        # still held, the least important note gives way: a held note is cut
+        # short there, a new note is left out (an overtone ghost arriving with
+        # a chord must not cut the tune short)
         active: list[QNote] = []
+        dropped: set[int] = set()
         for s in starts:
             new = [q for q in hn if q.start == s]
             active = [a for a in active if a.end > s]
-            for a in sorted(active, key=lambda a: imp.get(id(a), 0.0)):
-                ps = [x.pitch for x in active + new]
-                if len(active) + len(new) <= level.max_notes[hand] \
-                        and max(ps) - min(ps) <= level.span[hand]:
+            protected = {id(outer_of[(hand, s)])} if (hand, s) in outer_of else set()
+            pool = active + new
+            while pool:
+                ps = [x.pitch for x in pool]
+                if len(pool) <= level.max_notes[hand] and max(ps) - min(ps) <= level.span[hand]:
                     break
-                a.end = s
-                active.remove(a)
-            active += new
-        out += [q for q in hn if q.end > q.start]
+                victims = [x for x in pool if id(x) not in protected] or pool
+                v = min(victims, key=lambda x: imp.get(id(x), 0.0))
+                pool.remove(v)
+                if v.start == s:
+                    dropped.add(id(v))
+                else:
+                    v.end = s
+            active = [x for x in pool]
+        out += [q for q in hn if q.end > q.start and id(q) not in dropped]
 
     # ---- 6. left hand stays below the right hand
     rh = sorted((q for q in out if q.hand == RIGHT), key=lambda q: q.start)
