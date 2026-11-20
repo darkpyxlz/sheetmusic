@@ -6,10 +6,14 @@
   staff** with the accompaniment (chords and bass);
 * **instrumental music:** everything transcribed into a **piano score**.
 
-Whether the song has vocals, the **time signature** (2/4, 3/4, 4/4, 6/8, 9/8, 12/8),
-the **tempo**, the **key** and **key signature** are all detected automatically. Measures,
-ties and rests are filled in. It also writes a MIDI file you can listen to, and a PDF
-if MuseScore is installed.
+Whether the song has vocals, the **time signature** (2/4, 3/4, 4/4, 3/8, 6/8, 9/8, 12/8;
+any other can be forced), the **tempo**, the **key** and **key signature** are all
+detected automatically. Measures, ties and rests are filled in, and note values are
+chosen so that a crotchet is written as a crotchet, not as a semiquaver and rests.
+By default the piano part is **arranged to be playable by two hands** (at most three
+notes per hand within an octave; `--arrangement easy` for a simpler version, `full`
+for every note that was heard). It also writes a MIDI file you can listen to, and a
+PDF if MuseScore is installed.
 
 It uses plain signal processing (numpy and scipy, plus ffmpeg for decoding), so there
 are no models to download and no GPU is needed. A 4-minute song with vocals takes
@@ -385,40 +389,94 @@ hand that plays them (see "Hands" below).
 Transcribing polyphonic music automatically is still an unsolved research problem.
 Expect a usable draft that you correct in MuseScore, not a finished engraving.
 
-Accuracy is reported in three tiers, because they mean different things. "Note F" is
-the F-measure of notes with the right pitch whose start is within ±50 ms of the truth
-(the usual convention), measured on the notes before quantisation, with every setting
-at its default.
+Accuracy is reported in tiers, because they mean different things. "Note F" is the
+F-measure of notes with the right pitch whose start is within ±50 ms of the truth
+(the usual convention), measured on the notes before quantisation. All numbers below
+are for **held-out** pieces (fixed before any tuning, by other composers / other
+works than the development pieces), default settings unless a row says otherwise;
+"before" is the version at the start of the latest round of changes. Development-set
+numbers and the full method are in `docs/AUDIT.md`.
 
-**Real recordings** (MAESTRO v3: concert-grand piano with aligned MIDI, 8 development
-and 8 held-out pieces by different composers, 13–15 minutes each set):
+**Real recordings: notes** (MAESTRO v3, concert-grand piano with aligned MIDI, 8
+pieces, 15 minutes):
 
 | | precision | recall | note F | F with note ends |
 |---|---|---|---|---|
-| development set | 0.68 | 0.57 | **0.62** | 0.20 |
 | held-out set | 0.70 | 0.62 | **0.65** | 0.23 |
 
 This is virtuosic solo piano only. There is **no measurement on real singing, guitar
 or band recordings yet** (no annotated data was available), and none of how Demucs
 affects accuracy.
 
-**Sample-based** (Bach chorales rendered through a General MIDI soundfont, 24
-development and 24 held-out excerpts; exact notes, tempo, meter and key are known):
+**Real recordings: rhythm** (ASAP annotations of 33 MAESTRO performances, first
+minute each, in eight metres):
 
-| held-out set | note F | tempo | time signature | downbeat | key signature |
-|---|---|---|---|---|---|
-| piano | 0.81 | 8/8 | 7/8 | 2/8 | 3/8 |
-| string quartet | 0.83 | 7/8 | 7/8 | 4/8 | 7/8 |
-| wind quartet | 0.65 | 8/8 | 8/8 | 3/8 | 8/8 |
+| | before | now |
+|---|---|---|
+| time signature | 9/33 | 10/33 |
+| simple or compound time | 15/33 | 18/33 |
+| beat at the right level (±8 %) | 12/33 | 12/33 |
+| downbeat F (±70 ms) | 0.25 | 0.27 |
+| key signature | 14/30 | 16/30 |
 
-So tempo is reliable, the time signature is reliable for 4/4, and the downbeat and
-the key signature are not: expect to correct them (`--key`, or move the barlines in
-MuseScore). On four real piano pieces in 3/4 or 6/8 the detected meter was 4/4 every
-time.
+The gain is in compound time (6/8: 0 → 2 of 5, 12/8: 0 → 1 of 3); 4/4 went from 8 to 6
+of 8, and real 3/4 is still recognised only 1 time in 8. Expressive real playing is
+hard for a single-tempo beat tracker: check the metre and use `--time-signature`.
+
+**Scores in eight metres** (26 excerpts: piano pieces, string-quartet movements, folk
+tunes in 2/4, 3/4, 4/4, 2/2, 3/8, 6/8, 9/8, 12/8, rendered through a soundfont in
+strict tempo):
+
+| | before | now |
+|---|---|---|
+| note F | 0.79 | 0.79 |
+| time signature | 11/26 | **17/26** |
+| simple or compound time | 15/26 | 20/26 |
+| tempo (beat level right) | 17/26 | 18/26 |
+| downbeat | 10/26 | 11/26 |
+| written note values exact (pieces at the right tempo) | 0.80 | 0.81 |
+| semiquavers or shorter on the page (the scores: 0.21) | 0.08 | 0.08 |
+
+**Bach chorales** (24 excerpts through a soundfont: piano, string quartet, wind
+quartet):
+
+| | before | now |
+|---|---|---|
+| note F (piano / strings / winds) | 0.81 / 0.83 / 0.65 | 0.81 / 0.83 / 0.65 |
+| time signature | 22/24 | 21/24 |
+| tempo | 23/24 | 22/24 |
+| downbeat | 9/24 | **14/24** |
+| key signature | 18/24 | 18/24 |
+| written note values exact | 0.84 | 0.86 |
+| written too short | 0.10 | **0.04** |
+| semiquavers or shorter on the page (the scores: 0.01) | 0.08 | 0.05 |
+
+**Playable arrangements** (same held-out pieces; the transcription underneath is the
+same at every level, only what is written differs). "Tune kept" is the share of the
+true top line (melody) on the page, "bass kept" the same for the bottom line; the
+hand columns give, for the right hand, the notes held at once and the span held
+(95th percentiles, semitones), and the busiest second:
+
+| | level | written notes right | tune kept | bass kept | right hand: held / span / busiest second | left hand: held / span / busiest second |
+|---|---|---|---|---|---|---|
+| real piano | full | 0.73 | 0.64 | 0.60 | 3.9 / 16 / 9.0 | 3.6 / 20 / 7.2 |
+| real piano | **playable** | 0.76 | 0.56 | 0.48 | 3.0 / 12 / 6.8 | 2.9 / 12 / 3.9 |
+| real piano | easy | 0.75 | 0.37 | 0.28 | 2.0 / 8 / 3.9 | 2.0 / 7 / 2.0 |
+| chorales | full | 0.84 | 0.82 | 0.81 | 3.3 / 14 / 4.2 | 3.1 / 13 / 3.9 |
+| chorales | **playable** | 0.86 | 0.80 | 0.80 | 2.9 / 11 / 4.2 | 2.7 / 11 / 3.4 |
+| chorales | easy | 0.86 | 0.75 | 0.62 | 2.0 / 9 / 3.5 | 2.0 / 8 / 2.0 |
+| scores in eight metres | full | 0.92 | 0.82 | 0.77 | 2.6 / 11 / 6.1 | 2.5 / 11 / 4.5 |
+| scores in eight metres | **playable** | 0.92 | 0.80 | 0.74 | 2.3 / 9 / 5.8 | 2.2 / 10 / 3.4 |
+| scores in eight metres | easy | 0.91 | 0.55 | 0.48 | 1.8 / 5 / 3.6 | 1.9 / 6 / 2.0 |
+
+So "playable" costs little of the tune on ordinary music (−0.01 to −0.02) and keeps
+every hand within reach; on virtuosic concert piano it gives up some tune (−0.08) and
+bass (−0.12) to get there. "Easy" halves the busiest passages again; on music with
+fast runs it keeps only about half of the tune.
 
 **Synthetic** (`tests/`, the repo's own additive synthesiser; these pieces were used
 to tune the program, so read them as "it works on clean input", not as accuracy).
-Scored on the quantised output with a ±0.26-beat tolerance:
+Scored on the quantised output (`--arrangement full`) with a ±0.26-beat tolerance:
 
 | | note F-measure |
 |---|---|
@@ -429,23 +487,27 @@ Scored on the quantised output with a ±0.26-beat tolerance:
 | solo piano, 4/4, D minor | 0.93 |
 | strings + piano + bass + drums, 4/4, Eb major | 0.77 |
 | flute + guitar arpeggios + bass, 6/8, A minor | 0.77 |
-| accompaniment of vocal songs | 0.59 – 0.72 |
+| accompaniment of vocal songs | 0.58 – 0.73 |
 
-Tempo, meter, key and vocals/instrumental are detected correctly on all of these,
-including 16 transpositions of the four instrumental pieces.
+Tempo, metre and vocals/instrumental are detected correctly on all of these; of 16
+transpositions of the four instrumental pieces, one 6/8 comes out as 12/8 (same note
+values, barlines every second bar). The keys are right except the "hard" song, which
+is reported as B minor instead of D major (the same key signature).
 
-How to reproduce, and what changed these numbers, is in "Benchmarks" below and in
-`docs/AUDIT.md`. If the tempo comes out doubled or halved, or the key is wrong,
-override them with `--bpm` and `--key`.
+How to reproduce is in "Benchmarks" below. If the tempo comes out doubled or halved,
+or the key is wrong, override them with `--bpm` and `--key`.
 
 Known limitations:
 
 * Voices on a staff are assigned by "first free voice", so a line can move between
-  voices; the piano staves are split at a fixed pitch, not by hand.
-* No triplets or swing: the grid is binary (1/2/4/8/16 subdivisions per beat).
+  voices.
+* No triplets or swing in simple time: the grid there is binary (halves, quarters ...
+  of a beat); compound metres (6/8, 9/8, 12/8) divide in three.
 * No lyrics, dynamics or articulations.
 * Only one time signature and tempo marking for the whole piece; the beat map
-  follows tempo drift internally. Odd meters (5/4, 7/8) are not detected.
+  follows tempo drift internally. Bars of 5 and 7 beats are only considered with
+  `--odd-meters` (and can always be forced with `--time-signature`), and have not
+  been benchmarked: there were no such pieces in the data.
 * Instrumental music is written as a piano reduction; individual instruments are
   not separated into their own staves.
 

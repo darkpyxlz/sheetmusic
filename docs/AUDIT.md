@@ -467,3 +467,36 @@ notes, even for a ghost arriving with a chord (now the least important note give
 MuseScore 3.2.3 opened and exported (PDF, MusicXML) all 15 checked scores without
 repairs (3/8, 2/2, 6/8, 9/8 and 3/4, real and soundfont, all three levels), and the
 previously skipped MuseScore test now passes.
+
+### Held-out confirmation (version at the start of the round → now)
+
+| held-out set | measure | before | now |
+|---|---|---|---|
+| ASAP, 33 real performances | time signature / simple-compound / beat level / downbeat F / key signature | 9 / 15 / 12 / 0.253 / 14 of 30 | 10 / 18 / 12 / 0.273 / 16 of 30 |
+| 26 scores in eight metres | time signature / simple-compound / tempo / downbeat | 11 / 15 / 17 / 10 | 17 / 20 / 18 / 11 |
+| 26 scores in eight metres | written values exact / too short / semiquaver share (score 0.21) | 0.80 / 0.05 / 0.08 | 0.81 / 0.02 / 0.08 |
+| 24 chorales | time signature / tempo / downbeat / key signature | 22 / 23 / 9 / 18 | 21 / 22 / 14 / 18 |
+| 24 chorales | written values exact / too short / semiquaver share (score 0.01) | 0.84 / 0.10 / 0.08 | 0.86 / 0.04 / 0.05 |
+| MAESTRO, 8 real pieces | note F | 0.654 | 0.654 (transcription stage unchanged) |
+
+Arrangements on the held-out sets, tune / bass kept and right hand held (95 %) / span
+(95 %) / busiest second: real piano full 0.64 / 0.60, 3.9 / 16 / 9.0 → playable
+0.56 / 0.48, 3.0 / 12 / 6.8 → easy 0.37 / 0.28, 2.0 / 8 / 3.9; chorales full 0.82 /
+0.81 → playable 0.80 / 0.80 → easy 0.75 / 0.62; scores in eight metres full 0.82 /
+0.77 → playable 0.80 / 0.74 → easy 0.55 / 0.48. Written-note precision rises at
+"playable" on every set (0.73 → 0.76, 0.84 → 0.86, 0.92 → 0.92).
+
+What did not improve, or got worse:
+
+- Real 4/4 recordings: time signature 8 → 6 of 8. The real-recording gain is all in
+  compound time (6/8 0 → 2 of 5, 12/8 0 → 1 of 3); real 3/4 is still 1 of 8 and the
+  beat level is right for only 12 of 33 real performances, unchanged. A single-tempo
+  beat tracker remains the weak point on expressive playing.
+- Chorales: one time signature and one tempo lost (22 → 21, 23 → 22).
+- Synthetic: one of 16 transposed pieces now comes out in 12/8 instead of 6/8, and
+  the "hard" song's key is reported as B minor instead of D major (same signature).
+  Accompaniment F of the synthetic vocal songs moved from 0.59–0.72 to 0.58–0.73.
+- "Easy" keeps only about half the tune of music with fast runs; "playable" gives up
+  0.08 of the tune and 0.12 of the bass on virtuosic concert piano.
+- Odd metres (5, 7) are implemented but unmeasured: no such pieces in the data.
+- Still unmeasured: real singing, guitar, band mixes (no annotated data reachable).
