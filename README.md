@@ -463,11 +463,14 @@ python tests/synth.py test.mp3   # regenerate the synthetic test song
 
 ```bash
 pip install pretty_midi music21 && pip install --no-deps tinysoundfont
-python -m benchmarks.datasets            # fetch MAESTRO pieces (range requests), render chorales
-python -m benchmarks.run maestro dev     # real piano, development set
-python -m benchmarks.run corpus dev      # soundfont chorales, development set
+python -m benchmarks.datasets            # fetch MAESTRO pieces and ASAP annotations, render scores
+python -m benchmarks.run maestro dev     # real piano: notes
+python -m benchmarks.run asap dev        # real piano: beats, downbeats, time signature, key (ASAP)
+python -m benchmarks.run corpus dev      # soundfont chorales: notes, note values, metre, key
+python -m benchmarks.run mixed dev       # soundfont scores in eight metres (piano, quartets, folk tunes)
 python -m benchmarks.run maestro test    # held-out: only to confirm a finished change
-python -m benchmarks.run maestro dev --opt depth='"full"' --tag full   # any TranscribeOptions field
+python -m benchmarks.run maestro dev --opt arrangement='"easy"' --tag easy   # any TranscribeOptions field
+python -m benchmarks.report test before after   # markdown tables comparing saved runs
 ```
 
 Tune on `dev`, confirm on `test`, and report both. None of this is needed to use the

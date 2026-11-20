@@ -42,8 +42,10 @@ def _run(job):
     t0 = time.time()
     r = transcribe(os.path.join(DATA, tier, pid + ".wav"), TranscribeOptions(verbose=False, **opts))
     secs = time.time() - t0
-    raw = [(n.start, n.end, n.pitch, n.velocity, bool(n.struck),
-            None if n.decay != n.decay else round(n.decay, 1)) for n in r.melody_raw + r.accomp_raw]
+    # (getattr: older versions of the transcriber have no struck / decay fields)
+    raw = [(n.start, n.end, n.pitch, n.velocity, bool(getattr(n, "struck", False)),
+            None if getattr(n, "decay", float("nan")) != getattr(n, "decay", float("nan"))
+            else round(n.decay, 1)) for n in r.melody_raw + r.accomp_raw]
     qn = [q for st in (s_ for p_ in r.score.parts for s_ in p_.staves) for q in st.notes]   # as written
     quant = [(float(r.ticks_to_seconds(q.start)), float(r.ticks_to_seconds(q.end)), q.pitch) for q in qn]
     dur = r.info["duration"]

@@ -418,3 +418,52 @@ Roadmap status: M0 (harness) and M1 (vocal decision) are done to the extent data
 allows; M2 (onset timing) is done for struck notes. M3–M9 are open. The largest
 remaining losses are unchanged from section 5: repeated notes, soft notes, overtone
 and sub-harmonic ghosts, note ends, meter and downbeat.
+
+## 9. Addendum: second round (metre, note values, playable arrangements, CLI)
+
+Requests: more time signatures, long and short notes recognised ("not every note a
+semiquaver"), output a normal pianist can play, and every function on the command
+line. New benchmark material, fixed before tuning and split dev / held-out:
+
+- **ASAP** annotations for 67 MAESTRO performances (first 60 s): beats, downbeats,
+  time signature and key of real recordings in eight metres. Real rhythm ground truth
+  for the first time.
+- **Mixed corpus**: 52 score excerpts rendered through the soundfont (piano pieces,
+  string quartet movements, folk tunes) in 2/4, 3/4, 4/4, 2/2, 3/8, 6/8, 9/8, 12/8.
+- New metrics: written note values against the score (exact / too short / too long),
+  share of semiquavers on the page against the score's share, tune and bass-line
+  recall of the written notes, and per-hand playability.
+
+### What changed, with development-set evidence
+
+| change | evidence (development pieces) |
+|---|---|
+| Metre as a hierarchy (beat = ½–3 pulses, divided in 2 or 3, bars of 2/3/4) scored by periodicity, phase-aware contrast, tempo, bar-length and readability preferences; weights fitted with every synthetic test piece required to keep its metre | time signature 9 → 12 of 34 real recordings, 9 → 12 of 26 mixed scores, 23/24 chorales kept; downbeat F 0.285 → 0.302 (real), 0.418 → 0.645 (chorales) |
+| Grids and snapping per crotchet, tempo marks for every beat unit | 2/2, 3/8, 6/16 get the note values of 4/4, 3/4, 6/8 |
+| Note values of the piano part from the onsets around each note (96 % of score notes end where another starts), struck vs sustained notes classified by decay rate (piano 11–22 dB/s, strings/winds 0–3), struck notes run to the next onset of their own hand | exact written values 0.81 → 0.85 (chorales), 0.67 → 0.70 (mixed scores) |
+| Hands assigned by reach, movement and register instead of a fixed split | 91 % / 89 % (dev / held-out) of notes in the right hand against real piano scores, against 75 % / 81 % for a split at middle C |
+| `--arrangement playable` (default) / `easy` / `full` | see the table below |
+
+Arrangement levels on the development sets (written notes; the transcription
+underneath is identical):
+
+| set | level | written notes right | tune kept | bass kept | right hand: notes held (95 %) / span (95 %) / busiest second |
+|---|---|---|---|---|---|
+| real piano | full | 0.718 | 0.619 | 0.578 | 4.1 / 18.5 / 8.8 |
+| real piano | playable | 0.747 | 0.565 | 0.478 | 3.0 / 11.5 / 6.9 |
+| real piano | easy | 0.712 | 0.410 | 0.278 | 2.0 / 8.1 / 3.9 |
+| chorales | full | 0.854 | 0.838 | 0.830 | 3.4 / 13.8 / 3.9 |
+| chorales | playable | 0.866 | 0.808 | 0.821 | 2.9 / 10.4 / 3.9 |
+| chorales | easy | 0.876 | 0.770 | 0.652 | 2.0 / 8.6 / 3.2 |
+| mixed scores | full | 0.911 | 0.776 | 0.743 | 2.7 / 11.4 / 6.4 |
+| mixed scores | playable | 0.917 | 0.759 | 0.705 | 2.5 / 9.1 / 6.0 |
+| mixed scores | easy | 0.871 | 0.545 | 0.474 | 1.9 / 6.7 / 3.7 |
+
+Two arrangement bugs were found by measuring and fixed before the held-out run:
+overtone ghosts of inner voices (winds) were taken for the tune (wind tune kept at
+"playable" 0.75 → 0.82); and a hand's limits were enforced by always cutting the held
+notes, even for a ghost arriving with a chord (now the least important note gives way).
+
+MuseScore 3.2.3 opened and exported (PDF, MusicXML) all 15 checked scores without
+repairs (3/8, 2/2, 6/8, 9/8 and 3/4, real and soundfont, all three levels), and the
+previously skipped MuseScore test now passes.
