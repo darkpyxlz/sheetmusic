@@ -57,8 +57,12 @@ def test_playable_limits_per_hand_and_keeps_tune_and_bass():
         # the tune is all there, on its beats
         top = {(q.start, q.pitch) for q in out if q.hand == 1}
         assert all((i * 480, p) in top for i, p in enumerate(tune)), name
-        # the bass note C2 is kept on every beat it was struck
-        assert all(any(q.pitch == 36 and q.start == i * 480 for q in out) for i in range(8)), name
+        # the bass note C2 sounds on every beat: re-struck each beat at "playable",
+        # held over two beats at "easy" (repeated left-hand notes are held)
+        bass = [q for q in out if q.pitch == 36]
+        assert all(any(q.start <= i * 480 < q.end for q in bass) for i in range(8)), name
+        step = 480 if name == "playable" else 960
+        assert all(any(q.start == i for q in bass) for i in range(0, 3840, step)), name
         # only notes that were in the transcription
         assert {q.pitch for q in out} <= {q.pitch for q in notes}
 
@@ -120,3 +124,16 @@ def test_song_as_playable_piano_solo(tmp_path):
     for hand in (0, 1):
         size, span = _held(r.accomp_notes, hand)
         assert size <= lv.max_notes[hand] and span <= lv.span[hand], (hand, size, span)
+
+
+
+def test_repeated_left_hand_chords_are_held():
+    # a pumping quaver bass and repeated quaver chords in the left hand
+    notes = [QNote(t, t + 240, p, 70, True, 0) for t in range(0, 1920, 240) for p in (36, 43)]
+    notes += [QNote(t, t + 480, 72 + (t // 480), 90, True, 1) for t in range(0, 1920, 480)]
+    for name, every in (("playable", 480), ("easy", 960)):
+        lh = [q for q in arrange_piano(notes, name) if q.hand == 0]
+        starts = sorted({q.start for q in lh})
+        assert starts == list(range(0, 1920, every)), (name, starts)
+        last = max(starts)
+        assert all(q.end - q.start >= every for q in lh if q.start != last), name  # held, not re-struck

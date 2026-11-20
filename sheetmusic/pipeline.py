@@ -245,6 +245,7 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
             short_spec=F.short, short_df=opts.sr / F.short_nfft, onset_env=onset,
             act_in=act_nmf)
         acc_notes = poly.prune_overtone_ghosts(acc_notes)
+        acc_notes = poly.merge_split_notes(acc_notes)
         n_found = len(acc_notes)
         d = depth_mod.parse_depth(opts.depth)
         if d == 0:

@@ -52,11 +52,14 @@ class Level:
     left_gap: float                   # closest onsets in the left hand, in beats
     max_rate: tuple[float, float]     # (left, right): onsets per second
     legato: float                     # bridge gaps up to this many beats in a hand
+    left_grid: float = 0.0            # left-hand onsets on multiples of this many beats (0: off)
+    repeat: tuple[float, float] = (0.0, 0.0)  # (left, right): a pitch struck again within this
+    #                                   many beats is held instead (right: not the tune)
 
 
 LEVELS = {
-    "easy": Level("easy", (2, 2), (9, 9), 240, 0.5, 1.0, (2.5, 4.0), 2.0),
-    "playable": Level("playable", (3, 3), (12, 12), 120, 0.25, 0.5, (4.0, 7.0), 1.0),
+    "easy": Level("easy", (2, 2), (9, 9), 240, 0.5, 1.0, (2.5, 4.0), 2.0, 1.0, (2.0, 1.0)),
+    "playable": Level("playable", (3, 3), (12, 12), 120, 0.25, 0.5, (4.0, 7.0), 1.0, 0.5, (1.0, 0.5)),
 }
 ARRANGEMENTS = ("playable", "easy", "full")
 
@@ -119,12 +122,31 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
             return int(round(t / grid)) * grid, None
         return t, u
 
+    # left hand: onsets only on the level's left-hand grid (beats, half beats;
+    # quavers in compound time at "playable")
+    lgrid = 0
+    if level.left_grid:
+        lgrid = int(round(level.left_grid * beat_ticks))
+        if compound and level.left_grid < 1:
+            lgrid = beat_ticks // 3
+        lgrid = max(lgrid, grid)
+
+    lh_on_grid = set()
+    if lgrid:
+        lh_on_grid = {q.start for q in notes
+                      if (q.hand if q.hand is not None else int(q.pitch >= split)) == LEFT
+                      and q.start % lgrid == 0}
     work: dict[tuple[int, int, int], QNote] = {}
     for q in notes:
         hand = q.hand if q.hand is not None else int(q.pitch >= split)
-        if tunit(q.start) is not None and tunit(q.start) < grid:
+        if hand == LEFT and lgrid and q.start % lgrid and (q.start // lgrid) * lgrid in lh_on_grid:
+            continue                       # the left hand already plays on this beat: hold that
+        if tunit(q.start) is not None and tunit(q.start) < max(grid, lgrid if hand == LEFT else 0):
             continue                       # a fast triplet note: the group's on-beat note carries it
-        s, us = place(q.start)
+        if hand == LEFT and lgrid:
+            s, us = (q.start // lgrid) * lgrid, None        # an off-beat note joins its beat
+        else:
+            s, us = place(q.start)
         e, _ue = place(q.end)
         e = max(s + (us or grid), e)
         key = (hand, s, q.pitch)
@@ -133,6 +155,27 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
             work[key] = QNote(s, max(e, old.end if old else e), q.pitch, q.velocity, q.struck, hand)
         else:
             old.end = max(old.end, e)
+    # ---- 1a. a pitch struck again soon in the same hand is held instead:
+    # repeated left-hand notes and chords (pumping basses, strums, tremolo)
+    # and repeated inner notes of the right hand; the tune (the highest
+    # right-hand note at its onset) keeps its repetitions
+    top_at: dict[int, int] = {}
+    for q in work.values():
+        if q.hand == RIGHT:
+            top_at[q.start] = max(top_at.get(q.start, 0), q.pitch)
+    held: dict[tuple[int, int], QNote] = {}
+    for key in sorted(work, key=lambda k: (k[1], k[2])):
+        q = work[key]
+        win = int(round(level.repeat[q.hand] * beat_ticks))
+        prev = held.get((q.hand, q.pitch))
+        tune = q.hand == RIGHT and q.pitch >= top_at.get(q.start, 0)
+        if prev is not None and win and not tune and q.start - prev.start < win \
+                and q.start <= prev.end + grid:
+            prev.end = max(prev.end, q.end)
+            del work[key]
+            continue
+        held[(q.hand, q.pitch)] = q
+
     # ---- 1b. a lone blip is an artefact, not music: a note that would be
     # written at the shortest value, with nothing else in its hand within a
     # beat before or after it, and weaker than the hand's typical note (real

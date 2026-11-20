@@ -518,3 +518,22 @@ def prune_overtone_ghosts(notes: list[Note], intervals=(12, 19, 24, 28, 31),
         if not ghost:
             keep.append(n)
     return keep
+
+
+def merge_split_notes(notes: list[Note], gap: float = 0.02, ratio: float = 0.8) -> list[Note]:
+    """Join a held note the analysis cut in two.  A repetition of a pitch
+    that starts where the previous note of that pitch ended (within ``gap``
+    s) and is clearly weaker (below ``ratio`` of its strength) is a false
+    re-attack, not a new note: on the benchmark recordings this pattern was a
+    split held note or a false note 161 times and a real repetition 59 times.
+    Real repetitions are struck again: they leave a gap or come back as loud."""
+    out: list[Note] = []
+    last: dict[int, Note] = {}
+    for n in sorted(notes, key=lambda n: (n.start, n.pitch)):
+        p = last.get(n.pitch)
+        if p is not None and n.start - p.end < gap and n.velocity < ratio * p.velocity:
+            p.end = max(p.end, n.end)
+            continue
+        last[n.pitch] = n
+        out.append(n)
+    return out
