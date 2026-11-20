@@ -95,6 +95,8 @@ simple/compound choice was right 17 times in 18. When it is low, check the metre
 
 Open the `.mscz` in **MuseScore 3 or 4**. The file uses the MuseScore 3.01 format,
 which both versions read; MuseScore 4 may offer to update the layout style when it opens.
+Files are checked with MuseScore 3.2.3, which opens and exports them without repairs
+(the test suite does this when MuseScore is installed); MuseScore 4 has not been tested.
 
 `python -m sheetmusic -h` lists every option with its default; every setting of
 `TranscribeOptions` (below) has one. The ones you are most likely to need:
