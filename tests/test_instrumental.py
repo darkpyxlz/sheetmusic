@@ -30,7 +30,7 @@ def _run(tmp_path, name, **kw):
     mix, truth = make_piece(name, **kw)
     path = str(tmp_path / f"{name}.mp3")
     write_mp3(path, mix)
-    return transcribe(path, TranscribeOptions(verbose=False)), truth
+    return transcribe(path, TranscribeOptions(verbose=False, arrangement="full")), truth
 
 
 @pytest.mark.parametrize("name", list(CASES))

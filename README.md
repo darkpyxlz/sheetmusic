@@ -47,14 +47,21 @@ You can also `pip install .`, which adds an `mp3-to-mscz` command.
 ## Use
 
 ```bash
-python -m sheetmusic song.mp3                       # -> song.mscz, everything automatic
+python -m sheetmusic song.mp3                       # -> song.mscz, everything automatic,
+                                                    #    piano part playable by two hands
 python -m sheetmusic song.mp3 -o out.mscz --midi out.mid --pdf out.pdf
 python -m sheetmusic song.mp3 --mode melody         # only the vocal line
 python -m sheetmusic song.mp3 --mode instrumental   # force "no vocals": full piano score
 python -m sheetmusic song.mp3 --mode vocal          # force "has vocals"
 python -m sheetmusic song.mp3 --separate demucs     # neural vocal separation first
+python -m sheetmusic song.mp3 --arrangement easy       # the simplest version: tune, bass, few notes
+python -m sheetmusic song.mp3 --arrangement full       # every note that was heard (not arranged)
+python -m sheetmusic song.mp3 --mode accompaniment --melody-in-piano --arrangement easy
+                                                       # a song as an easy piano solo
 python -m sheetmusic song.mp3 --depth sparse        # fewer simultaneous notes (see below)
 python -m sheetmusic song.mp3 --start 30 --duration 20 --bpm 92 --key Eb --time-signature 6/8
+python -m sheetmusic song.mp3 --time-signature 7/8  # any signature can be forced (2/2, 5/4, 12/16 ...)
+python -m sheetmusic song.mp3 --info-json song.json # what was detected, and how hard each hand is
 ```
 
 The program prints what it detected, e.g.
@@ -68,21 +75,37 @@ The program prints what it detected, e.g.
 Open the `.mscz` in **MuseScore 3 or 4**. The file uses the MuseScore 3.01 format,
 which both versions read; MuseScore 4 may offer to update the layout style when it opens.
 
-Useful options (`python -m sheetmusic -h` lists them all):
+`python -m sheetmusic -h` lists every option with its default; every setting of
+`TranscribeOptions` (below) has one. The ones you are most likely to need:
 
 | option | meaning |
 |---|---|
+| `--arrangement playable\|easy\|full` | how much of the piano part to write (see "Playable arrangements"). `playable` (default): at most 3 notes per hand within an octave, nothing faster than semiquavers; `easy`: at most 2 notes per hand within a sixth, quavers at the shortest; `full`: every note that was heard |
+| `--melody-in-piano` | songs: put the sung tune into the piano's right hand too (with `--mode accompaniment`: a piano solo) |
 | `--mode auto\|vocal\|instrumental\|melody\|accompaniment` | `auto` (default) detects vocals; the others force a choice or write only one part |
+| `--time-signature N/D`, `--odd-meters` | force any time signature, or let detection also choose bars of 5 and 7 beats |
+| `--bpm`, `--key F#m` / `--key "A minor"`, `--tuning +20` | override what the program detects |
+| `--shortest 16th` | shortest note value written (64th, 32nd, 16th, 8th, quarter); values still snap to the longest value that fits |
+| `--depth auto\|full\|melody\|sparse\|normal\|rich\|N` | how many notes may sound at once before arranging (see "Depth") |
 | `--separate demucs` | use Demucs to split vocals/accompaniment before transcribing |
-| `--voicing 0.3` | lower it to get more (quieter) melody notes, raise it for fewer |
-| `--voice-strictness 0.72` | how strictly instrument notes (intro riffs, fills between vocal lines) are kept out of the voice staff; raise if you still see extra notes, lower if real sung notes go missing |
-| `--voice-range 45-86` | MIDI range searched for the melody (A2–D6; use `38-86` for a bass singer) |
-| `--depth auto\|full\|melody\|sparse\|normal\|rich\|N` | how many notes may sound at once (see "Depth"). `auto` (default) picks it from the music; `melody`/`sparse`/`normal`/`rich` = 1/2/4/6; `full` keeps everything the analysis finds |
-| `--poly-threshold 0.15` | accompaniment sensitivity (lower = more notes) |
-| `--polyphony 5` | analysis polyphony: harmonic series searched per frame (use `--depth` to thin the result) |
-| `--bpm`, `--time-signature 6/8`, `--key F#m`, `--tuning +20` | override what the program detects (time signature, tempo, key and tuning are all automatic by default) |
-| `--grid 8`, `--accomp-grid 8` | finest note value as subdivisions per beat (8 = demisemiquavers / 32nds, 4 = 16ths, 2 = quavers). Quantisation is adaptive: each note snaps to the longest value that fits its timing, so 32nds only appear where the music really has them |
-| `--keep-voice-in-accompaniment` | don't remove the voice's harmonics from the piano part |
+| `--voicing 0.3`, `--voice-strictness 0.72`, `--voice-range A2-D6` | melody sensitivity, how strictly instrument notes are kept out of the voice staff, and the range searched (MIDI numbers or note names) |
+| `--poly-method auto\|greedy\|nmf`, `--poly-threshold 0.15` | multi-pitch method and sensitivity of the piano part |
+| `--midi PATH`, `--pdf PATH`, `--info-json PATH` | extra outputs: MIDI to listen to, PDF (needs MuseScore), and what was detected (tempo, metre and its confidence, key, tuning, vocals, how hard each hand is) as JSON |
+
+Everything is also callable from Python:
+
+```python
+from sheetmusic import transcribe, TranscribeOptions, write_mscz, write_midi
+from sheetmusic import arrange_piano, playability, detect_meter, assign_hands, estimate_key
+
+res = transcribe("song.mp3", TranscribeOptions(arrangement="easy", time_signature=(6, 8)))
+print(res.info["time_signature"], res.info["bpm"], res.info["key"], res.info["playability"])
+write_mscz(res.score, "song.mscz")
+easier = arrange_piano(res.accomp_notes, "easy", beat_ticks=res.score.beat_ticks,
+                       measure_ticks=res.score.measure_ticks,      # re-arrange without
+                       crotchets_per_second=res.info["bpm"] * res.score.beat_ticks / 480 / 60)
+                                                                   # re-analysing
+```
 
 ## How it works
 
@@ -180,6 +203,38 @@ percentile) and allows one more, between 2 and 6. A lower depth trades recall fo
 precision: on the real-piano development set `--depth 2` gives precision 0.74 at
 recall 0.39, `full` gives 0.61 at 0.58.
 
+### Playable arrangements
+
+A transcription writes down what sounds: every note of a chord, every passing note,
+every repeated strum, which is more than two hands can play and more than anyone
+wants to read. `--arrangement` (`arrange.py`) keeps the main notes within what one
+player can manage:
+
+| | `full` | `playable` | `easy` |
+|---|---|---|---|
+| notes held at once, per hand | all | 3 | 2 |
+| widest interval in one hand | any | an octave | a sixth |
+| shortest note value, onset grid | 32nd | semiquaver | quaver |
+| closest onsets: right / left hand | – | ¼ / ½ beat | ½ / 1 beat |
+| onsets per second: right / left hand | – | 7 / 4 | 4 / 2.5 |
+
+What stays is decided by importance. The top note of the right hand (the tune) and
+the bottom note of the left hand (the bass) go first, then notes by strength, length
+and metrical position (downbeat > beat > off-beat). Onsets are kept greedily, most
+important first, as long as they respect the hand's gap and rate limits, so a fast
+tremolo or strum becomes one chord. Within each kept onset the outer note comes
+first, then other notes while the hand's chord size and reach allow. Notes are only
+removed, shortened, or lengthened to the next kept note of the same hand (a dropped
+passing note leaves its predecessor sounding), never moved to another pitch, so every
+note on the page is one the transcription heard. The left hand stays below the right.
+
+For songs, `--melody-in-piano` puts the sung tune into the right hand as its top line
+(a low male tune an octave up), so `--mode accompaniment --melody-in-piano
+--arrangement easy` gives a piano-solo version of the song.
+
+`--info-json` reports how hard the result is: per hand, onsets per second, the
+busiest second, notes held at once and the widest interval held.
+
 ### Vocals or instrumental?
 
 The lead line found by the melody tracker must pass six checks before a song is
@@ -234,8 +289,8 @@ it, subtracts its partials, and repeats up to `--polyphony` times per frame. Not
 are then tracked per pitch with hysteresis, so decaying piano notes don't flicker
 on and off. A note gets a new attack only when the energy in its own partials rises
 again. Leftover overtones of louder co-sounding notes are pruned, and short sub-bass
-blips (kick-drum tails) are dropped. Notes at or above `--split` (default C4) go on
-the treble staff, the rest on the bass staff.
+blips (kick-drum tails) are dropped. Notes go to the treble or bass staff by the
+hand that plays them (see "Hands" below).
 
 ### Rhythm and notation
 
@@ -243,26 +298,55 @@ the treble staff, the rest on the bass staff.
   autocorrelation, and beats from dynamic programming (Ellis 2007). The program
   maps time to beats through the tracked beats, so the score stays in time even
   when the tempo drifts.
-* **Time signature and downbeat** (`meter.py`): the tracked beats are divided into
-  six slots each (so both halves and thirds of a beat are on the grid). An *accent*
-  is measured in every slot from onsets, note starts (long notes and bass notes count
-  more) and harmonic change (chroma novelty: chords tend to change on the "1").
-  Every candidate meter (2/4, 3/4, 4/4, 6/8, 9/8, 12/8, each also with the beat
-  twice as long as the tracker's pulse) is then scored over all bars and every
-  possible downbeat position:
-  * do its downbeats stand out from the other positions in the bar?
-  * do its beats stand out from the off-beats?
-  * does the beat divide in two (simple time) or three (compound time)?
-  * does the tune move mostly in crotchets at that tempo (this settles "140 BPM
-    in crotchets" against "70 BPM in quavers")?
-  * is the tempo plausible (around 100 crotchets or 70 dotted crotchets per minute)?
-* Double or half tempo is thereby decided together with the meter.
+* **Time signature, beat level and downbeat** (`meter.py`). The beat tracker gives a
+  steady pulse, but on real recordings that pulse is often half the beat, a third of
+  it (the quavers of 6/8), or three semiquavers of a syncopated tune. Music repeats at
+  every level of its metre, so the metre is found as the hierarchy
+  *subdivision → beat → bar* that the music supports best. The pulse is cut into
+  twelve slots (halves, thirds and quarters of it are all on the grid) and three
+  accent signals are sampled there: attacks (onsets and note starts, long notes
+  counting more), harmony (chord changes and bass notes) and melodic shape. Every
+  hierarchy (beat = ½ to 3 pulses, divided in 2 or 3, bars of 2, 3 or 4 beats; 5 and
+  7 with `--odd-meters`) is scored by:
+  * periodicity: the autocorrelation of the accents at the beat, at the bar and at the
+    rival groupings (triple time repeats after 3 and 6 beats, not after 2 and 4);
+  * phase-aware contrast: do the beats stand out from the subdivisions between them,
+    does the downbeat stand out from the other beats, and do the subdivisions stand
+    out from the positions of the rival division (thirds against halves)? An even
+    stream of quavers repeats at every multiple of a quaver, so periodicity alone
+    cannot tell 4/4 from 12/8; contrast can;
+  * a tempo preference (a plain beat near 110 per minute, a dotted beat near 70), a
+    bar-length preference, and readability: the usual gap between notes should come
+    out as a quaver or a crotchet, not a semiquaver, so fast music is not written at
+    half speed in a blizzard of short notes.
+
+  The weights were fitted on development pieces (real recordings with annotated
+  beats, and scores in eight metres) with every synthetic test piece required to keep
+  its metre, and checked on held-out pieces (see "Accuracy, honestly"). The downbeat
+  is then the bar phase whose first beat carries the harmony changes and bass notes,
+  at which long notes start, and across whose barlines the fewest notes are tied.
+  `--time-signature` forces any signature (2/2, 3/8, 5/4, 7/8, 12/16 ...): beat level
+  and downbeat are still found from the audio.
 * Quantisation is adaptive down to demisemiquavers (32nds): each onset snaps to
   the coarsest grid (beat, half, quarter, eighth of a beat) it is close to, so a
   note sung slightly late still lands on the beat while genuinely fast notes keep
-  their 16ths/32nds. Accompaniment onsets snap a little harder (strums and
-  arpeggios smear them) and are at least a 16th long. Small gaps in the vocal
-  line are closed (legato).
+  their 16ths/32nds. Grids and tolerances are set per crotchet, so 2/2 and 3/8 get
+  the same note values as 4/4 and 3/4. Notes of the piano part struck together
+  snap together. Small gaps in the vocal line are closed (legato).
+* **Note values of the piano part** (`rhythm.quantize_poly`). In real scores a note
+  almost always ends exactly where another note begins (96 % of the notes in the
+  benchmark scores). So a note's end is chosen among the starts of later notes, plus
+  the grid position where its sound stopped (a rest follows), by a cost fitted to
+  how written lengths relate to sounding lengths in those scores. A freely decaying
+  note (piano, guitar: recognised by how fast its partials fade, 11–22 dB/s against
+  0–3 dB/s for bowed and blown notes) may be written much longer than it sounds,
+  because it fades or is damped early, and it runs to the next note *of its own
+  hand*; a sustained note is written as long as it sounds. This is what keeps a
+  crotchet from being written as a semiquaver followed by rests.
+* **Hands** (`hands.py`): the piano part is split between the hands by reach (a hand
+  spans about an octave), by movement (a hand stays where it is unless it has to
+  move) and by register, instead of at a fixed pitch. Against the hands in real
+  piano scores this is right for 91 % of notes, against 75 % for a split at middle C.
 * **Key**: the transcribed notes (bass counted double) are correlated with
   Krumhansl–Kessler major/minor profiles. (The raw spectrum's chroma is no longer
   blended in: every note's third partial sounds a fifth above it, which pulled keys
@@ -381,7 +465,9 @@ sheetmusic/
   melody.py     vocal f0 tracking, note segmentation, voice harmonic mask, vocal detection
   poly.py       multi-pitch transcription (iterative cancellation, harmonic NMF)
   rhythm.py     onsets, tempo, beat tracking, quantisation
-  meter.py      time signature + downbeat detection
+  meter.py      time signature, beat level and downbeat (metrical hierarchy)
+  hands.py      left/right hand assignment
+  arrange.py    playable piano arrangements (--arrangement), playability measures
   keys.py       key estimation and pitch spelling
   depth.py      how many notes may sound at once (--depth)
   mscore.py     .mscx / .mscz writer
@@ -389,15 +475,4 @@ sheetmusic/
   pipeline.py   glue (TranscribeOptions, transcribe())
   cli.py        command line
 benchmarks/     real-recording and soundfont benchmarks (not installed)
-```
-
-Use it from Python:
-
-```python
-from sheetmusic import transcribe, TranscribeOptions
-from sheetmusic.mscore import write_mscz
-
-res = transcribe("song.mp3", TranscribeOptions(bpm=None, key=None))
-print(res.info)                 # tempo, key, tuning, note counts
-write_mscz(res.score, "song.mscz")
 ```

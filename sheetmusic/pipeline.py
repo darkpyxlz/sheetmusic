@@ -37,7 +37,8 @@ class TranscribeOptions:
     melody_range: tuple[float, float] = (45, 86)
     min_melody_note: float = 0.09
     # accompaniment
-    arrangement: str = "full"        # "full" (everything heard), "playable", "easy" (see arrange.py)
+    arrangement: str = "playable"    # "playable", "easy", or "full" (everything heard); see arrange.py
+    melody_in_piano: bool = False    # songs: also play the sung tune in the piano's right hand
     depth: int | str | None = "auto"  # notes sounding at once: "auto", "full" (no limit),
     #                                   "melody"/"sparse"/"normal"/"rich" (1/2/4/6) or a number
     max_polyphony: int = 5
@@ -321,6 +322,9 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
     _log(opts, f"  key: {key_name}")
     if opts.key_filter:
         acc_q = _drop_weak_out_of_key(acc_q, fifths, mode, tpb)
+    if opts.melody_in_piano and mel_q and (opts.accompaniment or instrumental):
+        acc_q = _tune_into_right_hand(mel_q, acc_q)
+        _log(opts, "  the sung tune is in the piano's right hand")
     qps = bm.bpm * tpb / 480.0 / 60.0                  # crotchets per second
     measure_ticks = num * 1920 // den
     if opts.arrangement != "full" and acc_q:
@@ -375,6 +379,26 @@ def _drop_weak_out_of_key(notes: list[QNote], fifths: int, mode: str, tpb: int) 
     med_v = float(np.median([q.velocity for q in notes]))
     return [q for q in notes
             if q.pitch % 12 in scale or q.velocity >= med_v or q.end - q.start >= tpb]
+
+
+def _tune_into_right_hand(tune: list[QNote], piano: list[QNote]) -> list[QNote]:
+    """Piano-solo version of a song: the sung line becomes the top of the
+    right hand.  A low (male) tune is played an octave up, where a right hand
+    plays; piano notes at or above the tune while it sounds would hide it and
+    are left out."""
+    shift = 12 if np.median([q.pitch for q in tune]) < 60 else 0
+    t = [QNote(q.start, q.end, q.pitch + shift, max(q.velocity, 100), False, 1) for q in tune]
+    starts = np.array([q.start for q in t])
+    order = np.argsort(starts)
+    t = [t[i] for i in order]
+    starts = starts[order]
+    kept = []
+    for q in piano:
+        i = int(np.searchsorted(starts, q.end))          # tune notes starting before q ends
+        hidden = any(x.end > q.start and q.pitch >= x.pitch for x in t[max(0, i - 8):i])
+        if not hidden:
+            kept.append(q)
+    return sorted(kept + t, key=lambda q: (q.start, q.pitch))
 
 
 def _first_onset(notes: list[Note]) -> float:
