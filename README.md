@@ -108,6 +108,7 @@ Files are checked with MuseScore 3.2.3, which opens and exports them without rep
 | `--mode auto\|vocal\|instrumental\|melody\|accompaniment` | `auto` (default) detects vocals; the others force a choice or write only one part |
 | `--time-signature N/D`, `--odd-meters` | force any time signature, or let detection also choose bars of 5 and 7 beats |
 | `--bpm`, `--key F#m` / `--key "A minor"`, `--tuning +20` | override what the program detects |
+| `--swing auto\|on\|off`, `--no-triplets` | swung quavers written straight under "Swing" (auto-detected), and whether triplets are written |
 | `--shortest 16th` | shortest note value written (64th, 32nd, 16th, 8th, quarter); values still snap to the longest value that fits |
 | `--depth auto\|full\|melody\|sparse\|normal\|rich\|N` | how many notes may sound at once before arranging (see "Depth") |
 | `--separate demucs` | use Demucs to split vocals/accompaniment before transcribing |
@@ -240,6 +241,9 @@ player can manage:
 | shortest note value, onset grid | 32nd | semiquaver | quaver |
 | closest onsets: right / left hand | – | ¼ / ½ beat | ½ / 1 beat |
 | onsets per second: right / left hand | – | 7 / 4 | 4 / 2.5 |
+| left-hand onsets on | – | beats and half beats | beats |
+| a pitch struck again soon is held (left / right inner notes) | – | within 1 / ½ beat | within 2 / 1 beats |
+| triplets | all | quaver triplets kept, faster ones reduced to their on-beat notes | reduced to their on-beat notes |
 
 What stays is decided by importance. The top note of the right hand (the tune) and
 the bottom note of the left hand (the bass) go first, then notes by strength, length
@@ -250,6 +254,15 @@ first, then other notes while the hand's chord size and reach allow. Notes are o
 removed, shortened, or lengthened to the next kept note of the same hand (a dropped
 passing note leaves its predecessor sounding), never moved to another pitch, so every
 note on the page is one the transcription heard. The left hand stays below the right.
+
+The left hand is simplified most. It plays only on beats and half beats ("easy": only on
+beats; an off-beat note joins the beat it falls in, or is dropped when the left hand
+already plays there), and a bass note or chord it repeats soon is held instead of
+re-struck, so a pumping quaver bass, a strummed chord or a tremolo becomes one held
+note or chord. Repeated inner notes of the right hand are held the same way; the tune
+keeps its own repeated notes. In every mode, a held note the analysis cut in two (the
+second half starting exactly where the first ended, and clearly weaker) is joined
+again.
 
 For songs, `--melody-in-piano` puts the sung tune into the right hand as its top line
 (a low male tune an octave up), so `--mode accompaniment --melody-in-piano
@@ -356,6 +369,17 @@ hand that plays them (see "Hands" below).
   their 16ths/32nds. Grids and tolerances are set per crotchet, so 2/2 and 3/8 get
   the same note values as 4/4 and 3/4. Notes of the piano part struck together
   snap together. Small gaps in the vocal line are closed (legato).
+* **Triplets and swing** (`rhythm.detect_triplet_beats`, `rhythm.detect_swing`). Each beat
+  is written binary, in thirds (quaver triplets) or in sixths (semiquaver triplets,
+  bracketed per half beat), decided from where its onsets fall: a beat whose onsets sit
+  on thirds or sixths and never on a semiquaver position becomes a triplet beat
+  (triplets come in runs, so one hit is enough next to another triplet beat). This is
+  decided separately for the tune and for each hand, so two against three is possible.
+  *Swing*: when the off-beat quavers of a piece land on 2/3 of the beat and the first
+  third is rarely used, they are written as straight quavers under a "Swing" marking,
+  the way lead sheets do. A piece the metre detector reads as 6/8 or 12/8 is re-read in
+  simple time when it is swung or its triplets are occasional (real 6/8 divides almost
+  every beat in three). `--swing on|off` and `--no-triplets` override.
 * **Note values of the piano part** (`rhythm.quantize_poly`). In real scores a note
   almost always ends exactly where another note begins (96 % of the notes in the
   benchmark scores). So a note's end is chosen among the starts of later notes, plus
@@ -503,8 +527,9 @@ Known limitations:
 
 * Voices on a staff are assigned by "first free voice", so a line can move between
   voices.
-* No triplets or swing in simple time: the grid there is binary (halves, quarters ...
-  of a beat); compound metres (6/8, 9/8, 12/8) divide in three.
+* Triplets are found for about half of the real triplet notes in the benchmark scores,
+  and about 3 % of plain notes are wrongly bracketed; quintuplets and other tuplets are
+  not written.
 * No lyrics, dynamics or articulations.
 * Only one time signature and tempo marking for the whole piece; the beat map
   follows tempo drift internally. Bars of 5 and 7 beats are only considered with

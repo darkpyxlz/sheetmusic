@@ -182,8 +182,8 @@ def _near(f, targets, tol):
 
 def detect_swing(positions, compound: bool, min_hits: int = 8) -> bool:
     """Swung quavers: the off-beat quavers of the piece land near 2/3 of the
-    beat (long-short), not at 1/2, and the first third of the beat is
-    rarely used (that would be real triplets).  ``positions`` are onsets in
+    beat (long-short), not at 1/2, and the middle third of the beat is
+    rarely used (that would be real triplets, or a jig).  ``positions`` are onsets in
     notated beats."""
     if compound or len(positions) < min_hits:
         return False
@@ -191,7 +191,9 @@ def detect_swing(positions, compound: bool, min_hits: int = 8) -> bool:
     n23 = int(np.sum(np.abs(f - 2 / 3) < 0.06))
     n12 = int(np.sum(np.abs(f - 0.5) < 0.06))
     n13 = int(np.sum(np.abs(f - 1 / 3) < 0.06))
-    return n23 >= min_hits and n23 >= 2 * n12 and n13 <= 0.35 * n23
+    # jigs and slip jigs use the middle third 0.28-1.6 times as often as the
+    # last; a swung tune almost never (0.06 for the synthetic one)
+    return n23 >= min_hits and n23 >= 2 * n12 and n13 <= 0.2 * n23
 
 
 def detect_triplet_beats(positions, compound: bool, swing: bool = False,

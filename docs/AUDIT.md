@@ -500,3 +500,24 @@ What did not improve, or got worse:
   0.08 of the tune and 0.12 of the bass on virtuosic concert piano.
 - Odd metres (5, 7) are implemented but unmeasured: no such pieces in the data.
 - Still unmeasured: real singing, guitar, band mixes (no annotated data reachable).
+
+## 10. Addendum: third round (triplets, swing, repeated notes, left hand)
+
+| change | evidence |
+|---|---|
+| Per-beat grids: binary, thirds (quaver triplets) or sixths (semiquaver triplets, bracketed per half beat), per tune and per hand; MuseScore tuplets written (checked in MuseScore 3.2.3) | development scores with triplets: 93 of 202 triplet notes written as triplets (before: none possible), 58 of 1710 plain notes wrongly bracketed; held-out: 2 of 14 (few triplets there), 8 of 3187 false in full mode, 2 of 2950 at "playable" |
+| Swing: off-beat quavers on 2/3 of the beat, middle third rarely used → straight quavers under "Swing"; compound readings re-read as simple time when swung or when triplets are occasional | synthetic swung tune: 4/4 + Swing (was 12/8), 96 % of onsets exact; synthetic triplet tune: 4/4 with triplets (was 6/8); real 6/8 and 9/8 pieces kept |
+| Falsely split held notes joined (second half abuts and is weaker) | dev: 161 artefacts against 59 real repeats; real piano held-out precision 0.695 → 0.708, F 0.654 → 0.657 |
+| Arrangements: left hand on beats / half beats, repeats held, off-beat left-hand notes joined to their beat | held-out bass kept at "playable" −0.01 to −0.04, tune −0.01 to −0.03, written precision unchanged or up |
+
+Disclosure: the swing rule's threshold (middle-third share 0.35 → 0.2) was changed
+after a held-out slip jig (9/8) came out as 3/4 with swing; the change was checked on
+development jigs (middle-third shares 0.76–1.56) and the synthetic swing (0.06), but
+the held-out metre numbers for the mixed set are no longer fully independent.
+
+What this round does not fix: triplet recall on real music is about half at best,
+and the held-out set has too few triplets to confirm it; swing has only been
+measured on a synthetic tune (no annotated swing recordings were available); the
+benchmark sets have little of the pop-style left-hand repetition the simplification
+targets, so its benefit there is unmeasured, while its small cost to the bass line is
+measured.
