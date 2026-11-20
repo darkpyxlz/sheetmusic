@@ -378,3 +378,125 @@ output, CI.
 | Slides, consonants, drums, tuning and other vocal claims | Each is supported only by the synthetic singer. |
 | Runtime: 40 s vocal, 80 s instrumental for 4 minutes | Supported: 0.16× and 0.25× real time here. |
 | "Instrumental mode: slower, more accurate" | Supported: NMF 0.59 vs greedy 0.49 on the same recordings. |
+
+## 8. Addendum: first round of changes
+
+Four changes were made after this audit, each benchmarked against the previous
+version. The held-out sets (8 MAESTRO pieces by other composers, 24 other chorales)
+were fixed before any change and run twice: once at the end, and once more after
+correcting a regression that the synthetic vocal songs exposed.
+
+| step | change | real piano dev F | chorales dev F |
+|---|---|---|---|
+| 0 | audited code, default mode | 0.318 | 0.701 |
+| 1 | vocal detection: also require centre placement, vocal range, vibrato-sized wobble | 0.588 | 0.694 |
+| 2 | depth limit with a stricter bass (`--depth`, default `auto`) | 0.595 | 0.720 |
+| 3 | struck-note onsets placed from the short window | 0.616 | 0.764 |
+| 4 | key profile without raw-spectrum chroma | 0.616 | 0.765 |
+
+Held-out confirmation, audited code against current code:
+
+| | note F | precision | recall | false "vocals" |
+|---|---|---|---|---|
+| real piano | 0.408 → **0.654** | 0.38 → 0.70 | 0.45 → 0.62 | 7/8 → 0/8 |
+| chorales | 0.721 → **0.761** | 0.71 → 0.78 | 0.74 → 0.75 | 10/24 → 0/24 |
+
+What did not improve, or got worse:
+
+- Frame-level pitch-class agreement on chorales fell from 0.83 to 0.78 (held-out). Notes
+  are now cut shorter by the depth limit and wind pieces no longer take the vocal path.
+- Wind-quartet F is unchanged (0.64 → 0.65).
+- Key signature (17 → 18 of 24), time signature (22 → 22) and downbeat (10 → 9) on the
+  held-out chorales did not move. The key change in step 4 helped on 30-second dev
+  excerpts (14 → 17) but not on the full-length runs.
+- Two depth rules were withdrawn on evidence. The low-interval limit gained under 0.005
+  on real piano and cost 0.05 on strummed-guitar voicings. The stricter bass removed
+  real chord notes under vocals, so it applies to instrumental analysis only.
+- The vocal check is now conservative and has still never seen real singing.
+
+Roadmap status: M0 (harness) and M1 (vocal decision) are done to the extent data
+allows; M2 (onset timing) is done for struck notes. M3–M9 are open. The largest
+remaining losses are unchanged from section 5: repeated notes, soft notes, overtone
+and sub-harmonic ghosts, note ends, meter and downbeat.
+
+## 9. Addendum: second round (metre, note values, playable arrangements, CLI)
+
+Requests: more time signatures, long and short notes recognised ("not every note a
+semiquaver"), output a normal pianist can play, and every function on the command
+line. New benchmark material, fixed before tuning and split dev / held-out:
+
+- **ASAP** annotations for 67 MAESTRO performances (first 60 s): beats, downbeats,
+  time signature and key of real recordings in eight metres. Real rhythm ground truth
+  for the first time.
+- **Mixed corpus**: 52 score excerpts rendered through the soundfont (piano pieces,
+  string quartet movements, folk tunes) in 2/4, 3/4, 4/4, 2/2, 3/8, 6/8, 9/8, 12/8.
+- New metrics: written note values against the score (exact / too short / too long),
+  share of semiquavers on the page against the score's share, tune and bass-line
+  recall of the written notes, and per-hand playability.
+
+### What changed, with development-set evidence
+
+| change | evidence (development pieces) |
+|---|---|
+| Metre as a hierarchy (beat = ½–3 pulses, divided in 2 or 3, bars of 2/3/4) scored by periodicity, phase-aware contrast, tempo, bar-length and readability preferences; weights fitted with every synthetic test piece required to keep its metre | time signature 9 → 12 of 34 real recordings, 9 → 12 of 26 mixed scores, 23/24 chorales kept; downbeat F 0.285 → 0.302 (real), 0.418 → 0.645 (chorales) |
+| Grids and snapping per crotchet, tempo marks for every beat unit | 2/2, 3/8, 6/16 get the note values of 4/4, 3/4, 6/8 |
+| Note values of the piano part from the onsets around each note (96 % of score notes end where another starts), struck vs sustained notes classified by decay rate (piano 11–22 dB/s, strings/winds 0–3), struck notes run to the next onset of their own hand | exact written values 0.81 → 0.85 (chorales), 0.67 → 0.70 (mixed scores) |
+| Hands assigned by reach, movement and register instead of a fixed split | 91 % / 89 % (dev / held-out) of notes in the right hand against real piano scores, against 75 % / 81 % for a split at middle C |
+| `--arrangement playable` (default) / `easy` / `full` | see the table below |
+
+Arrangement levels on the development sets (written notes; the transcription
+underneath is identical):
+
+| set | level | written notes right | tune kept | bass kept | right hand: notes held (95 %) / span (95 %) / busiest second |
+|---|---|---|---|---|---|
+| real piano | full | 0.718 | 0.619 | 0.578 | 4.1 / 18.5 / 8.8 |
+| real piano | playable | 0.747 | 0.565 | 0.478 | 3.0 / 11.5 / 6.9 |
+| real piano | easy | 0.712 | 0.410 | 0.278 | 2.0 / 8.1 / 3.9 |
+| chorales | full | 0.854 | 0.838 | 0.830 | 3.4 / 13.8 / 3.9 |
+| chorales | playable | 0.866 | 0.808 | 0.821 | 2.9 / 10.4 / 3.9 |
+| chorales | easy | 0.876 | 0.770 | 0.652 | 2.0 / 8.6 / 3.2 |
+| mixed scores | full | 0.911 | 0.776 | 0.743 | 2.7 / 11.4 / 6.4 |
+| mixed scores | playable | 0.917 | 0.759 | 0.705 | 2.5 / 9.1 / 6.0 |
+| mixed scores | easy | 0.871 | 0.545 | 0.474 | 1.9 / 6.7 / 3.7 |
+
+Two arrangement bugs were found by measuring and fixed before the held-out run:
+overtone ghosts of inner voices (winds) were taken for the tune (wind tune kept at
+"playable" 0.75 → 0.82); and a hand's limits were enforced by always cutting the held
+notes, even for a ghost arriving with a chord (now the least important note gives way).
+
+MuseScore 3.2.3 opened and exported (PDF, MusicXML) all 15 checked scores without
+repairs (3/8, 2/2, 6/8, 9/8 and 3/4, real and soundfont, all three levels), and the
+previously skipped MuseScore test now passes.
+
+### Held-out confirmation (version at the start of the round → now)
+
+| held-out set | measure | before | now |
+|---|---|---|---|
+| ASAP, 33 real performances | time signature / simple-compound / beat level / downbeat F / key signature | 9 / 15 / 12 / 0.253 / 14 of 30 | 10 / 18 / 12 / 0.273 / 16 of 30 |
+| 26 scores in eight metres | time signature / simple-compound / tempo / downbeat | 11 / 15 / 17 / 10 | 17 / 20 / 18 / 11 |
+| 26 scores in eight metres | written values exact / too short / semiquaver share (score 0.21) | 0.80 / 0.05 / 0.08 | 0.81 / 0.02 / 0.08 |
+| 24 chorales | time signature / tempo / downbeat / key signature | 22 / 23 / 9 / 18 | 21 / 22 / 14 / 18 |
+| 24 chorales | written values exact / too short / semiquaver share (score 0.01) | 0.84 / 0.10 / 0.08 | 0.86 / 0.04 / 0.05 |
+| MAESTRO, 8 real pieces | note F | 0.654 | 0.654 (transcription stage unchanged) |
+
+Arrangements on the held-out sets, tune / bass kept and right hand held (95 %) / span
+(95 %) / busiest second: real piano full 0.64 / 0.60, 3.9 / 16 / 9.0 → playable
+0.56 / 0.48, 3.0 / 12 / 6.8 → easy 0.37 / 0.28, 2.0 / 8 / 3.9; chorales full 0.82 /
+0.81 → playable 0.80 / 0.80 → easy 0.75 / 0.62; scores in eight metres full 0.82 /
+0.77 → playable 0.80 / 0.74 → easy 0.55 / 0.48. Written-note precision rises at
+"playable" on every set (0.73 → 0.76, 0.84 → 0.86, 0.92 → 0.92).
+
+What did not improve, or got worse:
+
+- Real 4/4 recordings: time signature 8 → 6 of 8. The real-recording gain is all in
+  compound time (6/8 0 → 2 of 5, 12/8 0 → 1 of 3); real 3/4 is still 1 of 8 and the
+  beat level is right for only 12 of 33 real performances, unchanged. A single-tempo
+  beat tracker remains the weak point on expressive playing.
+- Chorales: one time signature and one tempo lost (22 → 21, 23 → 22).
+- Synthetic: one of 16 transposed pieces now comes out in 12/8 instead of 6/8, and
+  the "hard" song's key is reported as B minor instead of D major (same signature).
+  Accompaniment F of the synthetic vocal songs moved from 0.59–0.72 to 0.58–0.73.
+- "Easy" keeps only about half the tune of music with fast runs; "playable" gives up
+  0.08 of the tune and 0.12 of the bass on virtuosic concert piano.
+- Odd metres (5, 7) are implemented but unmeasured: no such pieces in the data.
+- Still unmeasured: real singing, guitar, band mixes (no annotated data reachable).

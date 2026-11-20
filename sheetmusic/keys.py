@@ -11,6 +11,8 @@ KK_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69,
 
 # fifths of the major key whose tonic has this pitch class (prefer <= 5 sharps / flats)
 MAJOR_FIFTHS = {0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: -6, 1: -5, 8: -4, 3: -3, 10: -2, 5: -1}
+CHROMA_WEIGHT = 0.0   # raw-spectrum chroma carries every third partial as a "fifth": it pulled 3 of 24 chorales to the dominant
+TONIC_WEIGHT = 0.12
 NAMES = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
 
 
@@ -34,7 +36,7 @@ def estimate_key(groups: list[list[QNote]], weights: list[float] | None = None,
             hist[q.pitch % 12] += w * d * (2.0 if q.pitch < 55 else 1.0)
             allq.append(q)
     if chroma is not None and chroma.sum() > 0 and hist.sum() > 0:
-        hist = hist / hist.sum() + 0.5 * chroma / chroma.sum()
+        hist = hist / hist.sum() + CHROMA_WEIGHT * chroma / chroma.sum()
     if hist.sum() == 0:
         return 0, "major", "C major"
     tonic_ev = np.zeros(12)
@@ -59,7 +61,7 @@ def estimate_key(groups: list[list[QNote]], weights: list[float] | None = None,
     for tonic in range(12):
         for mode, prof in (("major", KK_MAJOR), ("minor", KK_MINOR)):
             r = np.corrcoef(hist, np.roll(prof, tonic))[0, 1]
-            r += 0.12 * tonic_ev[tonic]
+            r += TONIC_WEIGHT * tonic_ev[tonic]
             if r > best[0]:
                 best = (r, tonic, mode)
     _, tonic, mode = best

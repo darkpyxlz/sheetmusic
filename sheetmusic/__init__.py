@@ -15,5 +15,17 @@ The pipeline is pure DSP (numpy + scipy, ffmpeg for decoding):
 __version__ = "0.1.0"
 
 from .pipeline import TranscribeOptions, Transcription, transcribe  # noqa: E402
+from .arrange import LEVELS as ARRANGEMENT_LEVELS, arrange_piano, playability  # noqa: E402
+from .depth import auto_depth, limit_depth  # noqa: E402
+from .hands import assign_hands  # noqa: E402
+from .keys import estimate_key, spell, tpc_name  # noqa: E402
+from .meter import detect_meter, signature_spec  # noqa: E402
+from .midi import write_midi  # noqa: E402
+from .mscore import PartSpec, ScoreSpec, StaffSpec, score_to_mscx, write_mscz  # noqa: E402
+from .notes import Note, QNote  # noqa: E402
 
-__all__ = ["TranscribeOptions", "Transcription", "transcribe", "__version__"]
+__all__ = ["TranscribeOptions", "Transcription", "transcribe", "__version__",
+           "ARRANGEMENT_LEVELS", "arrange_piano", "playability", "auto_depth", "limit_depth",
+           "assign_hands", "estimate_key", "spell", "tpc_name", "detect_meter", "signature_spec",
+           "write_midi", "PartSpec", "ScoreSpec", "StaffSpec", "score_to_mscx", "write_mscz",
+           "Note", "QNote"]

@@ -584,6 +584,25 @@ def vocal_evidence(track: MelodyTrack, notes: list[Note], spec: np.ndarray, df: 
       and plucked strings are rock steady.
     * ``fluct``: share of the line's energy that keeps moving (vibrato,
       intonation, see ``spectral.fluctuating_part``).
+
+    On real recordings those three are not sufficient: in polyphonic piano
+    music the tracked "line" hops between simultaneous notes (large wobble),
+    every attack and decay counts as movement, and the harmonic pattern
+    changes with whatever else shares its bins.  All eight real solo-piano
+    recordings of the benchmark passed them.  Three further conditions
+    describe what a lead vocal is rather than what a synthetic piano is not:
+
+    * ``centre``: a lead vocal is mixed to the centre, a stereo-miked
+      instrument is not (median centre ratio of the tracked partials; 1.0 for
+      mono files, so it only ever removes candidates);
+    * ``range``: a sung line stays within about an octave and a half
+      (5th..95th percentile of its notes); a path hopping through a piano
+      texture covers more;
+    * the wobble must be vibrato-sized, not hop-sized.
+
+    A wrong "instrumental" costs the voice staff (``--mode vocal`` restores
+    it); a wrong "vocal" notches a phantom voice out of the music and halves
+    the note accuracy, so doubtful cases go to "instrumental".
     """
     K = spec.shape[1]
     env, wob = [], []
@@ -611,7 +630,13 @@ def vocal_evidence(track: MelodyTrack, notes: list[Note], spec: np.ndarray, df: 
     timbre_var = float(np.mean(np.std(np.array(env), axis=0))) if len(env) >= 4 else 0.0
     wobble = float(np.median(wob)) if wob else 0.0
     cover = sum(n.end - n.start for n in notes) / max(1e-9, track.voiced.size / fps)
-    has = (len(notes) >= 6 and cover >= 0.08 and timbre_var >= 0.45 and wobble >= 6.0
-           and fluct >= 0.6)
+    centre = 1.0
+    if track.centre_ratio is not None and v.any():
+        centre = float(np.median(track.centre_ratio[v]))
+    ps = np.array([n.pitch for n in notes], float)
+    prange = float(np.percentile(ps, 95) - np.percentile(ps, 5)) if ps.size else 0.0
+    has = (len(notes) >= 6 and cover >= 0.08 and timbre_var >= 0.45
+           and 6.0 <= wobble <= 45.0 and fluct >= 0.7 and centre >= 0.7 and prange <= 19.0)
     return dict(has_vocals=bool(has), timbre_var=round(timbre_var, 3), wobble=round(wobble, 2),
-                fluct=round(fluct, 3), cover=round(cover, 3))
+                fluct=round(fluct, 3), cover=round(float(cover), 3), centre=round(centre, 3),
+                range=round(prange, 1))

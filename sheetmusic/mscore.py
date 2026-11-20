@@ -260,14 +260,13 @@ def _staff_xml(staff_id: int, voices_measures, score: ScoreSpec, first_staff: bo
             if first_staff:
                 beat_q = score.beat_ticks / DIVISION        # beat length in crotchets
                 qps = score.bpm * beat_q / 60.0             # crotchets per second
-                if score.beat_ticks == 720:
-                    sym = "<sym>metNoteQuarterUp</sym><sym>space</sym><sym>metAugmentationDot</sym>"
-                elif score.beat_ticks == 960:
-                    sym = "<sym>metNoteHalfUp</sym>"
-                elif score.beat_ticks == 240:
-                    sym = "<sym>metNote8thUp</sym>"
-                else:
-                    sym = "<sym>metNoteQuarterUp</sym>"
+                dot = "<sym>space</sym><sym>metAugmentationDot</sym>"
+                sym = {240: "<sym>metNote8thUp</sym>", 360: "<sym>metNote8thUp</sym>" + dot,
+                       480: "<sym>metNoteQuarterUp</sym>",
+                       720: "<sym>metNoteQuarterUp</sym>" + dot,
+                       960: "<sym>metNoteHalfUp</sym>", 1440: "<sym>metNoteHalfUp</sym>" + dot,
+                       1920: "<sym>metNoteWhole</sym>"}.get(score.beat_ticks,
+                                                            "<sym>metNoteQuarterUp</sym>")
                 out.append(f"<Tempo><tempo>{qps:.6f}</tempo><followText>1</followText>"
                            f"<text>{sym} = {int(round(score.bpm))}</text></Tempo>")
         out.append(contents[0][mi])

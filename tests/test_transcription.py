@@ -32,7 +32,7 @@ def song(tmp_path_factory):
 @needs_ffmpeg
 def test_vocal_melody_and_accompaniment(song):
     path, truth = song
-    r = transcribe(path, TranscribeOptions(verbose=False))
+    r = transcribe(path, TranscribeOptions(verbose=False, arrangement="full"))
     mel = evaluate(r.melody_notes, truth["melody"])
     acc = evaluate(r.accomp_notes, truth["accomp"])
     assert mel["f"] >= 0.9, mel
@@ -47,8 +47,8 @@ def test_vocal_melody_and_accompaniment(song):
 @needs_ffmpeg
 def test_voice_removal_reduces_accompaniment_garbage(song):
     path, truth = song
-    on = transcribe(path, TranscribeOptions(verbose=False, melody=False))
-    off = transcribe(path, TranscribeOptions(verbose=False, melody=False,
+    on = transcribe(path, TranscribeOptions(verbose=False, melody=False, arrangement="full"))
+    off = transcribe(path, TranscribeOptions(verbose=False, melody=False, arrangement="full",
                                              remove_voice_from_accompaniment=False))
     p_on = evaluate(on.accomp_notes, truth["accomp"])["precision"]
     p_off = evaluate(off.accomp_notes, truth["accomp"])["precision"]
@@ -62,7 +62,8 @@ def test_robustness(tmp_path, kw):
     mix, truth = make_song(**kw)
     path = str(tmp_path / "s.mp3")
     write_mp3(path, mix)
-    r = transcribe(path, TranscribeOptions(verbose=False, accompaniment="stereo" in kw))
+    r = transcribe(path, TranscribeOptions(verbose=False, accompaniment="stereo" in kw,
+                                           arrangement="full"))
     assert evaluate(r.melody_notes, truth["melody"])["f"] >= 0.85
 
 
@@ -82,7 +83,7 @@ def test_cli_writes_mscz_and_midi(song, tmp_path):
 def test_musescore_opens_file_without_repairs(song, tmp_path):
     path, _ = song
     out = tmp_path / "out.mscz"
-    r = transcribe(path, TranscribeOptions(verbose=False))
+    r = transcribe(path, TranscribeOptions(verbose=False, arrangement="full"))
     from sheetmusic.mscore import write_mscz
     write_mscz(r.score, str(out))
     exe = shutil.which("mscore3") or shutil.which("mscore")
@@ -101,7 +102,7 @@ def test_hard_song_no_instrument_notes_in_voice_staff(tmp_path):
     mix, truth = make_hard_song()
     path = str(tmp_path / "hard.mp3")
     write_mp3(path, mix)
-    r = transcribe(path, TranscribeOptions(verbose=False))
+    r = transcribe(path, TranscribeOptions(verbose=False, arrangement="full"))
     mel = evaluate(r.melody_notes, truth["melody"], max_shift_beats=16)
     assert mel["precision"] >= 0.8 and mel["recall"] >= 0.8, mel
     rx = rhythm_exactness(r.melody_notes, truth["melody"], mel["shift"])
