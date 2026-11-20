@@ -19,7 +19,8 @@ import warnings
 import numpy as np
 
 from .datasets import DATA, maestro_reference
-from .metrics import beat_f_any_level, event_f, frame_chroma_acc, metrics, note_values, ts_class
+from .metrics import (beat_f_any_level, event_f, frame_chroma_acc, line_recall, metrics, note_values,
+                      ts_class)
 
 OUT = os.path.join(os.path.dirname(__file__), "results")
 
@@ -56,7 +57,13 @@ def _run(job):
                             period=r.beat_map.period, offset=r.beat_offset, beat_ticks=sc.beat_ticks,
                             measure_ticks=sc.measure_ticks),
                meter_scores=r.info.get("meter_scores"))
+    # how much of the page is semiquavers or shorter (the score's own share where known)
+    out["short_share"] = float(np.mean([q.end - q.start <= 120 for q in qn])) if qn else 0.0
+    if tier in ("corpus", "mixed"):
+        out["short_share_ref"] = float(np.mean([d <= 0.25 + 1e-9 for _b, d, _p in x["notes"]]))
+    out["playability"] = r.info.get("playability")
     if ref:
+        out.update(melody_recall=line_recall(ref, quant, "top"), bass_recall=line_recall(ref, quant, "bottom"))
         out.update(raw=metrics(ref, [e[:3] for e in raw]), quant=metrics(ref, quant),
                    chord=frame_chroma_acc(ref, [e[:3] for e in raw], dur)[0],
                    est_polyphony=sum(e[1] - e[0] for e in raw) / dur,
@@ -114,11 +121,26 @@ def summarise(res, label=""):
         elif "tempo_ok" in rs[0]:
             line += "  tempo %d meter %d class %d downbeat %d key %d" % tuple(
                 sum(r[k] for r in rs) for k in ("tempo_ok", "meter_ok", "class_ok", "downbeat_ok", "key_ok"))
+        if "melody_recall" in rs[0]:
+            line += "  | written P100 %.3f R100 %.3f tune %.3f bass %.3f" % (
+                m(rs, "quant", "P100"), m(rs, "quant", "R100"),
+                np.mean([r["melody_recall"] for r in rs]), np.mean([r["bass_recall"] for r in rs]))
+        pl = [r["playability"] for r in rs if r.get("playability")]
+        if pl:
+            def hp(h, k):
+                v = [p_[h][k] for p_ in pl if p_[h].get("notes")]
+                return float(np.mean(v)) if v else 0.0
+            line += "  | RH %.1f/s busiest %.1f held95 %.1f span %.1f  LH %.1f/s busiest %.1f held95 %.1f span %.1f" % (
+                hp("right", "onsets_per_s"), hp("right", "busiest_second"), hp("right", "held_p95"), hp("right", "span_p95"),
+                hp("left", "onsets_per_s"), hp("left", "busiest_second"), hp("left", "held_p95"), hp("left", "span_p95"))
+        line += "  16ths %.2f" % np.mean([r["short_share"] for r in rs])
+        if "short_share_ref" in rs[0]:
+            line += " (score %.2f)" % np.mean([r["short_share_ref"] for r in rs])
         vs = [r["values"] for r in rs if "values" in r]
         if vs:
-            line += ("  | values exact %.2f short %.2f long %.2f valueF %.3f  16ths %.2f (score %.2f)" % tuple(
+            line += ("  | values (right tempo only) exact %.2f short %.2f long %.2f valueF %.3f" % tuple(
                 float(np.mean([v[k] for v in vs])) for k in
-                ("value_exact", "too_short", "too_long", "value_F", "short_share", "short_share_ref")))
+                ("value_exact", "too_short", "too_long", "value_F")))
         line += f"  x{sum(r['secs'] for r in rs) / sum(r['dur'] for r in rs):.2f}rt"
         print(line)
 

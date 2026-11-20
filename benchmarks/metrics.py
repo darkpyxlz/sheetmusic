@@ -38,7 +38,7 @@ def metrics(ref, est):
     out["F_off"] = prf(len(ok), len(ref), len(est))[2]
     # looser onset window (what survives quantisation / window smear)
     wide = match(ref, est, 0.10)
-    out["F100"] = prf(len(wide), len(ref), len(est))[2]
+    out["P100"], out["R100"], out["F100"] = prf(len(wide), len(ref), len(est))
     out["F_chroma"] = prf(len(match(ref, est, 0.05, True)), len(ref), len(est))[2]
     if wide:
         do = np.array([est[j][0] - ref[i][0] for i, j in wide]) * 1000
@@ -130,3 +130,33 @@ def beat_f_any_level(ref, est, tol=0.07):
         cands.append(np.sort(third))
         cands += [est[k::2] for k in range(2)] + [est[k::3] for k in range(3)]
     return max(event_f(ref, list(c), tol) for c in cands)
+
+
+def outer_line(notes, which="top", together=0.03):
+    """The top (tune) or bottom (bass) line of a polyphonic part: at each onset
+    the highest / lowest note, kept only if it is above / below everything
+    still sounding then.  notes: [(onset, offset, pitch)]."""
+    ns = sorted(notes)
+    out, i = [], 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1][0] - ns[i][0] <= together:
+            j += 1
+        grp = ns[i:j + 1]
+        cand = max(grp, key=lambda n: n[2]) if which == "top" else min(grp, key=lambda n: n[2])
+        t = ns[i][0]
+        sounding = [n[2] for n in ns[:i] if n[1] > t + 0.05]
+        if not sounding or (cand[2] >= max(sounding) if which == "top" else cand[2] <= min(sounding)):
+            out.append(cand)
+        i = j + 1
+    return out
+
+
+def line_recall(ref, est, which="top", tol=0.10):
+    """Share of the reference's top or bottom line that the estimate contains
+    (same pitch, onset within ``tol`` s): does an arrangement keep the tune
+    and the bass?"""
+    line = outer_line(ref, which)
+    if not line:
+        return 0.0
+    return len(match(line, est, tol)) / len(line)
