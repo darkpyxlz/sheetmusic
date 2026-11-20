@@ -39,6 +39,7 @@ FIELD_FLAGS = {
     "poly_threshold": "--poly-threshold", "poly_rel_threshold": "--poly-rel-threshold",
     "accomp_range": "--accomp-range", "min_accomp_note": "--min-accomp-note",
     "bpm": "--bpm", "time_signature": "--time-signature", "odd_meters": "--odd-meters",
+    "triplets": "--no-triplets", "swing": "--swing",
     "melody_grid": "--grid", "accomp_grid": "--accomp-grid",
     "tuning": "--tuning", "key": "--key", "split_point": "--split",
     "key_filter": "--no-key-filter", "title": "--title", "verbose": "--quiet",
@@ -190,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "detected (2/4, 3/4, 4/4, 3/8, 6/8, 9/8, 12/8)")
     g.add_argument("--odd-meters", action="store_true",
                    help="let detection also choose bars of 5 or 7 beats (5/4, 7/8 ...)")
+    g.add_argument("--swing", choices=["auto", "on", "off"], default=d.swing,
+                   help="swung quavers (played long-short) are written as straight quavers "
+                        "under a 'Swing' marking; auto detects it, on forces it, off writes "
+                        "what is played")
+    g.add_argument("--no-triplets", action="store_true",
+                   help="never write triplets: everything on the binary grid")
     g.add_argument("--shortest", choices=list(SHORTEST), default=None,
                    help="shortest note value written, for both staves (sets --grid and "
                         "--accomp-grid); values snap to the longest value that fits")
@@ -265,6 +272,7 @@ def options_from_args(args) -> TranscribeOptions:
         accomp_range=(int(args.accomp_range[0]), int(args.accomp_range[1])),
         min_accomp_note=args.min_accomp_note,
         bpm=args.bpm, time_signature=args.time_signature, odd_meters=args.odd_meters,
+        triplets=not args.no_triplets, swing=args.swing,
         melody_grid=args.grid, accomp_grid=args.accomp_grid,
         tuning=args.tuning, key=args.key, split_point=args.split,
         key_filter=not args.no_key_filter, title=args.title, verbose=not args.quiet)

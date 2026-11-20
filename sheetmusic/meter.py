@@ -300,7 +300,8 @@ def detect_meter(bm: BeatMap, onset: np.ndarray, fps: float, notes: list[Note],
                  spec: np.ndarray | None = None, df: float = 0.0, ref_hz: float = 440.0,
                  time_signature: tuple[int, int] | None = None, debug: bool = False,
                  lead: list[Note] | None = None, chroma_frames: np.ndarray | None = None,
-                 odd_meters: bool = False, weights: dict | None = None) -> Meter:
+                 odd_meters: bool = False, weights: dict | None = None,
+                 simple_only: bool = False) -> Meter:
     """Choose time signature, beat level and downbeat (see the module text).
 
     ``time_signature`` forces the signature; ``odd_meters`` adds bars of five
@@ -328,7 +329,7 @@ def detect_meter(bm: BeatMap, onset: np.ndarray, fps: float, notes: list[Note],
     if forced:
         groupings = [(forced[0], forced[1])]
     else:
-        groupings = [(m, n) for m in (2, 3) for n in (2, 3, 4)]
+        groupings = [(m, n) for m in ((2,) if simple_only else (2, 3)) for n in (2, 3, 4)]
         if odd_meters:
             groupings += [(2, 5), (2, 7)]
     cands = []
@@ -433,6 +434,33 @@ def _fallback(bm: BeatMap, time_signature) -> Meter:
         _m, n, beat_ticks, compound = signature_spec(*time_signature)
         return Meter(time_signature[0], time_signature[1], compound, beat_ticks, bm, 0, n, {}, 0.0)
     return Meter(4, 4, False, 480, bm, 0, 4, {}, 0.0)
+
+
+def simple_with_triplets(beat_map: BeatMap, notes: list[Note], min_beats: int = 8,
+                         occasional: float = 0.6) -> str | None:
+    """Is a piece the detector reads as compound really simple time with
+    triplets or swing?  Returns "swing", "triplets" or None.
+
+    * Swing plays the first and last third of the beat (long-short) but
+      rarely the middle one (``rhythm.detect_swing``).
+    * Genuine 6/8, 9/8 or 12/8 divides almost every beat in three: in the
+      benchmark's compound pieces there are 1.5-2 onsets on the thirds per
+      beat.  When the thirds are occasional (fewer than ``occasional`` per
+      beat that has any onset), the triplets are the exception in a simple
+      metre."""
+    from .rhythm import detect_swing
+    pos = np.array([float(beat_map.to_beats(n.start)) for n in notes])
+    if pos.size < 2 * min_beats:
+        return None
+    if detect_swing(pos, False):
+        return "swing"
+    k = np.floor(pos + 0.04).astype(int)
+    f = pos - k
+    beats = len(set(k))
+    thirds = int(np.sum((np.abs(f - 1 / 3) < 0.06) | (np.abs(f - 2 / 3) < 0.06)))
+    if beats >= min_beats and 0 < thirds < occasional * beats:
+        return "triplets"
+    return None
 
 
 def skyline(notes: list[Note], min_dur: float = 0.1, merge: float = 0.06) -> list[Note]:

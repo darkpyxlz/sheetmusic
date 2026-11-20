@@ -62,3 +62,15 @@ def test_sung_waltz(tmp_path):
     assert r.info["key"] == "G major"
     mel = evaluate(r.melody_notes, truth["melody"])
     assert mel["f"] >= 0.85, mel
+
+
+def test_triplets_and_swing(tmp_path):
+    """A 4/4 tune with quaver triplets is written in 4/4 with triplets, not
+    in 6/8; a swung tune is written straight under 'Swing', not in 12/8."""
+    r, truth = _run(tmp_path, "triplets_C_4-4")
+    assert (r.score.time_num, r.score.time_den) == (4, 4)
+    assert sum(1 for q in r.accomp_notes if (q.start % 480) % 30) >= 4
+    r, truth = _run(tmp_path, "swing_F_4-4")
+    assert (r.score.time_num, r.score.time_den) == (4, 4) and r.info["swing"]
+    ev = evaluate(r.accomp_notes, truth["notes"], ticks_per_beat=480)
+    assert ev["f"] >= 0.85, ev

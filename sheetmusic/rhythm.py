@@ -173,9 +173,124 @@ def snap(b: float, grid: int, tol_coarse: float = 0.12) -> float:
     return round(b * grid) / grid
 
 
+UNIT = 20      # internal tick unit: divides every binary value and every triplet (160, 80 ...)
+
+
+def _near(f, targets, tol):
+    return min(abs(f - t) for t in targets) < tol
+
+
+def detect_swing(positions, compound: bool, min_hits: int = 8) -> bool:
+    """Swung quavers: the off-beat quavers of the piece land near 2/3 of the
+    beat (long-short), not at 1/2, and the first third of the beat is
+    rarely used (that would be real triplets).  ``positions`` are onsets in
+    notated beats."""
+    if compound or len(positions) < min_hits:
+        return False
+    f = np.mod(np.asarray(positions, float), 1.0)
+    n23 = int(np.sum(np.abs(f - 2 / 3) < 0.06))
+    n12 = int(np.sum(np.abs(f - 0.5) < 0.06))
+    n13 = int(np.sum(np.abs(f - 1 / 3) < 0.06))
+    return n23 >= min_hits and n23 >= 2 * n12 and n13 <= 0.35 * n23
+
+
+def detect_triplet_beats(positions, compound: bool, swing: bool = False,
+                         tol: float = 0.06, margin: float = 0.03, min_hits: int = 2,
+                         sixths: bool = True) -> dict[int, int]:
+    """Beats (notated beat numbers) divided in three: {beat: 3} for quaver
+    triplets (thirds of the beat), {beat: 6} for semiquaver triplets (sixths:
+    a triplet on each half of the beat).
+
+    An onset is a third-hit when it is within ``tol`` of 1/3 or 2/3 of the
+    beat and clearly closer to it than to any semiquaver position (1/4, 1/2,
+    3/4); a sixth-hit likewise for 1/6 or 5/6; a binary hit is clearly on
+    1/4 or 3/4 (1/2 belongs to both binary and sixths).  A beat with a binary
+    hit stays binary.  Otherwise it is in sixths with a sixth-hit and at
+    least ``min_hits`` hits on sixths, in thirds with ``min_hits`` third-hits,
+    or with one hit when a neighbouring beat is a triplet beat (triplets come
+    in runs).  Under swing a beat needs a hit on its first third (swung
+    quavers alone sit on 2/3).  Compound metres divide in three anyway."""
+    if compound or not len(positions):
+        return {}
+    pos = np.asarray(positions, float)
+    k = np.floor(pos + 0.04).astype(int)
+    f = pos - k
+    inner = (f > 0.08) & (f < 0.92)
+    d16 = np.min(np.abs(f[:, None] - np.array([0.25, 0.5, 0.75])[None, :]), axis=1)
+    d3 = np.minimum(np.abs(f - 1 / 3), np.abs(f - 2 / 3))
+    d6 = np.minimum(np.abs(f - 1 / 6), np.abs(f - 5 / 6))
+    q4 = np.minimum(np.abs(f - 0.25), np.abs(f - 0.75))
+    third = inner & (d3 < tol) & (d3 < d16 - margin)
+    sixth = inner & (d6 < tol) & (d6 < d16 - margin) & sixths
+    binh = inner & (q4 < tol) & (q4 < np.minimum(d3, d6) - margin)
+    half = inner & (np.abs(f - 0.5) < tol)
+    first = inner & (np.abs(f - 1 / 3) < tol)
+    beats: dict[int, list[int]] = {}
+    for kk, a, b6, bh, hh, fi in zip(k, third, sixth, binh, half, first):
+        c = beats.setdefault(int(kk), [0, 0, 0, 0, 0])
+        c[0] += int(a)
+        c[1] += int(b6)
+        c[2] += int(bh)
+        c[3] += int(hh)
+        c[4] += int(fi)
+    out: dict[int, int] = {}
+    for kk, (n3, n6, nb, nh, nf) in beats.items():
+        if nb or (swing and not nf):
+            continue
+        if n6 and n6 + n3 + nh >= min_hits:
+            out[kk] = 6
+        elif n3 >= min_hits:
+            out[kk] = 3
+    for kk, (n3, n6, nb, nh, nf) in beats.items():
+        if kk in out or nb or (swing and not nf) or not (kk - 1 in out or kk + 1 in out):
+            continue
+        if n6:
+            out[kk] = 6
+        elif n3:
+            out[kk] = 3
+    return out
+
+
+class Grid:
+    """Where notes may be written: per beat the binary adaptive grid
+    (``snap``), thirds (quaver triplets) or sixths (semiquaver triplets);
+    under swing, off-beat quavers played long-short are written straight
+    (the score says "Swing")."""
+
+    def __init__(self, ticks_per_beat: int, grid: int, triplets: dict[int, int] | None = None,
+                 swing: bool = False):
+        self.tpb = ticks_per_beat
+        self.grid = grid
+        self.triplets = triplets or {}
+        self.swing = swing
+        self.ok = ticks_per_beat % 6 == 0
+
+    def snap_units(self, b: float, tol: float) -> int:
+        k = int(np.floor(b + 0.04))
+        f = b - k
+        m = self.triplets.get(k) if self.ok else None
+        if m:
+            return int(round((k + round(f * m) / m) * self.tpb / UNIT))
+        if self.swing and abs(f - 2 / 3) < 0.12:
+            return int(round((k + 0.5) * self.tpb / UNIT))
+        return int(round(snap(b, self.grid, tol) * self.tpb / UNIT))
+
+    def allows(self, units: int) -> bool:
+        """Can a note of this stream start or end here?"""
+        t = units * UNIT
+        r = t % self.tpb
+        if r == 0:
+            return True
+        m = self.triplets.get(t // self.tpb)
+        if m:
+            return (r * m) % self.tpb == 0
+        return r % 30 == 0
+
+
 def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat: int,
              grid: int, monophonic: bool = False, fill_gaps: float = 0.0,
-             min_units: int = 1, snap_tol: float = 0.12) -> list[QNote]:
+             min_units: int = 1, snap_tol: float = 0.12, swing: bool = False,
+             triplets: bool = True) -> list[QNote]:
     """Quantise notes adaptively, down to ``grid`` subdivisions per beat
     (8 = demisemiquavers in x/4).
 
@@ -183,16 +298,21 @@ def quantize(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_beat:
     lands on a barline.  ``fill_gaps`` (in beats) extends a note to the next
     one if the rest in between would be at most that long (legato).
     """
-    unit = ticks_per_beat // grid
+    unit = UNIT
+    min_units = min_units * (ticks_per_beat // grid) // UNIT
+    pos = [float(bm.to_beats(n.start)) + beat_offset for n in notes]
+    trip = detect_triplet_beats(pos, ticks_per_beat % 3 != 0 or ticks_per_beat in (720, 360, 1440),
+                                swing) if triplets else {}
+    G = Grid(ticks_per_beat, grid, trip, swing)
     out: list[QNote] = []
     for n in notes:
         b0 = float(bm.to_beats(n.start)) + beat_offset
         b1 = float(bm.to_beats(n.end)) + beat_offset
-        s = int(round(snap(b0, grid, snap_tol) * grid))
-        e = int(round(snap(b1, grid, snap_tol * 1.5) * grid))
+        s = G.snap_units(b0, snap_tol)
+        e = G.snap_units(b1, snap_tol * 1.5)
         if e - s < min_units:
             # keep short notes only if they were at least ~half a unit long
-            if (b1 - b0) * grid >= 0.5 * min_units:
+            if (b1 - b0) * ticks_per_beat / UNIT >= 0.5 * min_units:
                 e = s + min_units
             else:
                 continue
@@ -250,7 +370,8 @@ def quantize_poly(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_
                   near_cost: float = 0.4, far_cost: float = 1.4, later_cost: float = 0.7,
                   hand_cost: float = 0.3, hand_far_cost: float = 0.9, other_hand_cost: float = 2.2,
                   max_extend: float = 4.0, voice_span: int = 5, split: int = 60,
-                  slopes: dict | None = None, use_hands: bool = True) -> list[QNote]:
+                  slopes: dict | None = None, use_hands: bool = True, swing: bool = False,
+                  triplets: bool = True, compound: bool = False) -> list[QNote]:
     """Quantise polyphonic notes and choose their written values.
 
     Starts: notes struck together (within ``chord_window`` s) get one
@@ -279,25 +400,36 @@ def quantize_poly(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_
     """
     from .hands import assign_hands
     slopes = slopes or VALUE_SLOPES
-    unit = ticks_per_beat // grid
+    old_unit = ticks_per_beat // grid
+    unit = UNIT
+    min_units = max(1, min_units * old_unit // UNIT)
     if not notes:
         return []
     order = sorted(notes, key=lambda n: (n.start, n.pitch))
-    # ---- starts: chords snap together
-    starts = [0] * len(order)
+    # ---- chords: notes struck together share one position
+    pos = [0.0] * len(order)
     i = 0
     while i < len(order):
         j = i
         while j + 1 < len(order) and order[j + 1].start - order[i].start <= chord_window:
             j += 1
         b0 = float(np.mean([float(bm.to_beats(n.start)) for n in order[i:j + 1]])) + beat_offset
-        s = int(round(snap(b0, grid, snap_tol) * grid))
         for k in range(i, j + 1):
-            starts[k] = s
+            pos[k] = b0
         i = j + 1
-    onset_units = np.array(sorted(set(starts)))
-    hands = assign_hands([QNote(s * unit, s * unit + unit, n.pitch) for s, n in zip(starts, order)],
+    # ---- hands from a provisional binary snap, then each hand's own grid:
+    # triplets are decided per hand, so two against three stays possible
+    binary = Grid(ticks_per_beat, grid, {}, swing)
+    prov = [binary.snap_units(b, snap_tol) for b in pos]
+    hands = assign_hands([QNote(s * unit, s * unit + old_unit, n.pitch) for s, n in zip(prov, order)],
                          ticks_per_beat, split=split)
+    grids = {}
+    for h in set(hands):
+        hp = [b for b, hh in zip(pos, hands) if hh == h]
+        grids[h] = Grid(ticks_per_beat, grid,
+                        detect_triplet_beats(hp, compound, swing) if triplets else {}, swing)
+    starts = [grids[h].snap_units(b, snap_tol) for b, h in zip(pos, hands)]
+    onset_units = np.array(sorted(set(starts)))
     by_onset: dict[int, list[tuple[int, int]]] = {}
     for k, s in enumerate(starts):
         by_onset.setdefault(s, []).append((order[k].pitch, hands[k]))
@@ -308,7 +440,8 @@ def quantize_poly(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_
             continue
         b0 = float(bm.to_beats(n.start)) + beat_offset
         b1 = float(bm.to_beats(n.end)) + beat_offset
-        sound = max((b1 - b0) * grid, 0.25)                    # sounding length in units
+        G = grids[hands[k]]
+        sound = max((b1 - b0) * ticks_per_beat / UNIT, 0.25)  # sounding length in units
         if sound < 0.5 * min_units:
             continue                                           # a blip, not a note
         up, down = slopes[bool(n.struck)]
@@ -317,14 +450,20 @@ def quantize_poly(notes: list[Note], bm: BeatMap, beat_offset: float, ticks_per_
             r = np.log2(length / sound)
             return up * r if r > 0 else -down * r
         # a rest follows: the end is where the sound stopped, snapped like a start
-        g = max(s + min_units, int(round(snap(s / grid + sound / grid, grid, snap_tol * 1.5) * grid)))
+        g = G.snap_units((s + sound) * UNIT / ticks_per_beat, snap_tol * 1.5)
+        if g < s + min_units:
+            g = s + min_units
+            while not G.allows(g):
+                g += 1
         best_e, best_c = g, rest_cost + fit(g - s)
         passed = 0
         lo = np.searchsorted(onset_units, s + min_units)
         for o in onset_units[lo:]:
             length = o - s
-            if length > max(sound * 8.0, max_extend * grid):
+            if length > max(sound * 8.0, max_extend * ticks_per_beat / UNIT):
                 break
+            if not G.allows(int(o)):
+                continue                                       # not on this hand's grid
             there = by_onset[int(o)]
             near = any(abs(q - n.pitch) <= voice_span for q, _h in there)
             if n.struck and use_hands:

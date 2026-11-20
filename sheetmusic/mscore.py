@@ -53,6 +53,7 @@ class ScoreSpec:
     time_den: int = 4
     bpm: float = 120.0
     beat_ticks_override: int | None = None   # 720 for compound time (dotted crotchet beat)
+    swing: bool = False                      # write "Swing" over the first bar
     extra_meta: dict = field(default_factory=dict)
 
     @property
@@ -140,8 +141,37 @@ def _location(delta_ticks: int, measure_ticks: int, from_tick: int, note_delta: 
     return "<location>" + "".join(parts) + "</location>"
 
 
+def _tuplet_groups(bounds, ms: int, me: int, bticks: int) -> dict[int, tuple[int, int]]:
+    """Triplet groups of a measure: {group start: (length, unit)}.  A beat
+    whose bounds all lie on thirds is one quaver-triplet group (unit =
+    beat/3); a beat with bounds on sixths is split in half-beat groups of
+    semiquaver triplets (unit = beat/6), each half a group only if it has a
+    bound off the binary grid."""
+    if bticks % 6 or bticks in (360, 720, 1440):
+        return {}
+    groups = {}
+    beats = {}
+    for b in bounds:
+        if ms <= b < me:
+            beats.setdefault(b - (b - ms) % bticks, []).append((b - ms) % bticks)
+    for b0, rs in beats.items():
+        off = [r for r in rs if r % 30]
+        if not off:
+            continue
+        if all((r * 3) % bticks == 0 for r in rs):
+            groups[b0] = (bticks, bticks // 3)
+            continue
+        half = bticks // 2
+        for h in (0, half):
+            if any(h < r < h + half and r % 30 for r in rs):
+                groups[b0 + h] = (half, bticks // 6)
+    return groups
+
+
 def _staff_events(notes: list[QNote], n_measures: int, mticks: int, bticks: int):
-    """Yield per-measure lists of events: ('rest'|'chord', tick, dur, name, dots, notes)."""
+    """Per-measure lists of events ('rest'|'chord'|'mrest', tick, dur, name,
+    dots, notes, tuplet).  ``tuplet`` is (group start, base note name) for an
+    event inside a triplet group, else None (see ``_tuplet_groups``)."""
     notes = sorted(notes, key=lambda q: (q.start, q.pitch))
     measures = []
     for m in range(n_measures):
@@ -153,29 +183,47 @@ def _staff_events(notes: list[QNote], n_measures: int, mticks: int, bticks: int)
                 bounds.add(q.start)
             if ms < q.end < me:
                 bounds.add(q.end)
+        groups = _tuplet_groups(bounds, ms, me, bticks)
+        for g, (length, _u) in groups.items():
+            bounds.update((g, min(me, g + length)))
         bounds = sorted(bounds)
         events = []
         if not inside:
-            events.append(("mrest", ms, mticks, None, 0, []))
+            events.append(("mrest", ms, mticks, None, 0, [], None))
             measures.append(events)
             continue
+        starts = sorted(groups)
         for a, b in zip(bounds[:-1], bounds[1:]):
             sounding = [q for q in inside if q.start <= a and q.end >= b]
-            pieces = split_duration(a - ms, b - a, mticks, bticks)
+            g = next((g for g in starts if g <= a < g + groups[g][0]), None)
+            if g is not None:
+                length, u = groups[g]
+                n = round((b - a) / u)
+                # nominal values: one unit is written as the value 3/2 its length
+                pieces = [(u, _DURS_BY_NOMINAL(u * 3 // 2), 0)] * (n % 2) \
+                    + [(2 * u, _DURS_BY_NOMINAL(u * 3), 0)] * (n // 2)
+                tup = (g, _DURS_BY_NOMINAL(u * 3 // 2))
+            else:
+                pieces = split_duration(a - ms, b - a, mticks, bticks)
+                tup = None
             t = a
-            for i, (d, name, dots) in enumerate(pieces):
+            for d, name, dots in pieces:
                 if not sounding:
-                    events.append(("rest", t, d, name, dots, []))
+                    events.append(("rest", t, d, name, dots, [], tup))
                 else:
                     nl = []
                     for q in sorted(sounding, key=lambda q: q.pitch):
                         tie_back = q.start < t
                         tie_fwd = q.end > t + d
                         nl.append((q.pitch, tie_back, tie_fwd, q.velocity))
-                    events.append(("chord", t, d, name, dots, nl))
+                    events.append(("chord", t, d, name, dots, nl, tup))
                 t += d
         measures.append(events)
     return measures
+
+
+def _DURS_BY_NOMINAL(ticks: int) -> str:
+    return _DUR_BY_TICKS[ticks][0]
 
 
 def _note_xml(pitch: int, key: int | tuple, tie_back: bool, tie_fwd: bool,
@@ -209,8 +257,17 @@ def _voice_measures_xml(measures, score: ScoreSpec, hidden_rests: bool) -> list[
     for events in measures:
         parts = []
         has_notes = any(ev[0] == "chord" for ev in events)
-        for kind, tick, dur, name, dots, nl in events:
+        open_tup = None
+        for kind, tick, dur, name, dots, nl, tup in events:
             k += 1
+            if tup != open_tup:
+                if open_tup is not None:
+                    parts.append("<endTuplet/>")
+                if tup is not None:
+                    parts.append("<Tuplet><normalNotes>2</normalNotes><actualNotes>3</actualNotes>"
+                                 f"<baseNote>{tup[1]}</baseNote>"
+                                 "<Number><style>Tuplet</style><text>3</text></Number></Tuplet>")
+                open_tup = tup
             if kind == "mrest":
                 if not hidden_rests:
                     parts.append(f"<Rest><durationType>measure</durationType>"
@@ -232,6 +289,8 @@ def _voice_measures_xml(measures, score: ScoreSpec, hidden_rests: bool) -> list[
                     for p, tb, tf, _v in nl)
                 parts.append(f"<Chord>{dots_xml}<durationType>{name}</durationType>{notes_xml}</Chord>")
             prev_tick = tick
+        if open_tup is not None:
+            parts.append("<endTuplet/>")
         out.append("".join(parts) if (has_notes or not hidden_rests) else "")
     return out
 
@@ -267,6 +326,8 @@ def _staff_xml(staff_id: int, voices_measures, score: ScoreSpec, first_staff: bo
                        960: "<sym>metNoteHalfUp</sym>", 1440: "<sym>metNoteHalfUp</sym>" + dot,
                        1920: "<sym>metNoteWhole</sym>"}.get(score.beat_ticks,
                                                             "<sym>metNoteQuarterUp</sym>")
+                if score.swing:
+                    out.append("<StaffText><text>Swing</text></StaffText>")
                 out.append(f"<Tempo><tempo>{qps:.6f}</tempo><followText>1</followText>"
                            f"<text>{sym} = {int(round(score.bpm))}</text></Tempo>")
         out.append(contents[0][mi])

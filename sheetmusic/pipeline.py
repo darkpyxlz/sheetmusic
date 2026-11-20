@@ -51,6 +51,8 @@ class TranscribeOptions:
     bpm: float | None = None
     time_signature: tuple[int, int] | None = None   # None = detect automatically; any N/D
     odd_meters: bool = False         # also consider bars of 5 and 7 beats (5/4, 7/8 ...)
+    triplets: bool = True            # write triplets where the beat divides in three
+    swing: str = "auto"              # "auto" (detect), "on", "off": long-short quavers written straight
     melody_grid: int = 8             # finest note value, per crotchet (8 = 32nds)
     accomp_grid: int = 8             # adaptive: coarser values are used when they fit
     tuning: float | None = None      # cents; None = auto
@@ -276,6 +278,14 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
                                              if opts.time_signature else None),
                              debug=bool(os.environ.get("SHEETMUSIC_DEBUG")),
                              lead=mel_notes, odd_meters=opts.odd_meters)
+    if met.compound and not opts.time_signature and (opts.triplets or opts.swing != "off"):
+        why = meter.simple_with_triplets(met.beat_map, all_notes)
+        if why:
+            alt = meter.detect_meter(bm, onset, fps, all_notes, spec=harm, df=df, ref_hz=ref_hz,
+                                     lead=mel_notes, simple_only=True)
+            if abs(alt.beat_map.period / met.beat_map.period - 1) < 0.1:
+                _log(opts, f"  {met.name} reads as {alt.name} with {why}")
+                met = alt
     num, den = met.num, met.den
     bm = met.beat_map
     phase = met.downbeat_phase
@@ -304,13 +314,25 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
             unit //= 2
         return max(1, tpb // unit)
     mgrid, agrid = _grid(opts.melody_grid), _grid(opts.accomp_grid)
+    swing = False
+    if opts.swing != "off" and not met.compound:
+        allpos = [float(bm.to_beats(n.start)) + offset for n in mel_notes + acc_notes]
+        swing = opts.swing == "on" or rhythm.detect_swing(allpos, met.compound)
+    trip = opts.triplets and not met.compound
     mel_q = rhythm.quantize(mel_notes, bm, offset, tpb, mgrid, monophonic=True,
-                            fill_gaps=0.25 * scale, snap_tol=0.12 * scale)
+                            fill_gaps=0.25 * scale, snap_tol=0.12 * scale, swing=swing,
+                            triplets=trip)
     # accompaniment onsets are smeared (strums, arpeggios, long STFT windows):
     # snap them harder so chords line up instead of scattering into 32nds
     acc_q = rhythm.quantize_poly(acc_notes, bm, offset, tpb, agrid, snap_tol=0.18 * scale,
                                  min_units=max(1, 120 // (tpb // agrid)),  # >= a 16th
-                                 split=opts.split_point, max_extend=4.0 * scale)
+                                 split=opts.split_point, max_extend=4.0 * scale, swing=swing,
+                                 triplets=trip, compound=met.compound)
+    if swing:
+        _log(opts, "  swing: long-short quavers written straight, marked 'Swing'")
+    n_trip = sum(1 for q in mel_q + acc_q if (q.start % tpb) % 30)
+    if n_trip:
+        _log(opts, f"  {n_trip} notes in triplets")
 
     # ---------------- key ----------------
     if opts.key:
@@ -354,9 +376,10 @@ def transcribe(path: str, opts: TranscribeOptions | None = None) -> Transcriptio
     score = ScoreSpec(parts=parts, title=title, subtitle="Transcribed from audio",
                       key_fifths=fifths, key_minor=(mode == "minor"),
                       time_num=num, time_den=den, bpm=round(bm.bpm),
-                      beat_ticks_override=tpb)
+                      beat_ticks_override=tpb, swing=swing)
     info = dict(duration=dur, tuning_cents=tuning, bpm=bm.bpm, key=key_name,
                 time_signature=met.name, meter_scores=met.scores, meter_confidence=met.confidence,
+                swing=swing,
                 has_vocals=has_vocals, vocal_evidence=vinfo, depth=depth_used, playability=play,
                 arrangement=opts.arrangement,
                 melody_notes=len(mel_q), accomp_notes=len(acc_q),

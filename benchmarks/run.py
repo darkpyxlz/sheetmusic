@@ -143,6 +143,10 @@ def summarise(res, label=""):
             line += ("  | values (right tempo only) exact %.2f short %.2f long %.2f valueF %.3f" % tuple(
                 float(np.mean([v[k] for v in vs])) for k in
                 ("value_exact", "too_short", "too_long", "value_F")))
+            tr = sum(v.get("trip_ref", 0) for v in vs)
+            line += "  triplets written %d/%d, false %d/%d" % (
+                sum(v.get("trip_hit", 0) for v in vs), tr,
+                sum(v.get("trip_false", 0) for v in vs), sum(v.get("n_plain", 0) for v in vs))
         line += f"  x{sum(r['secs'] for r in rs) / sum(r['dur'] for r in rs):.2f}rt"
         print(line)
 

@@ -174,8 +174,49 @@ def _sung_waltz():
     return spec
 
 
+def _triplets():
+    """C major, 4/4, 92 BPM, piano: a tune mixing crotchets, straight quavers
+    and triplet quavers, over left-hand minim chords."""
+    t = 1 / 3
+    mel = [(72, 1), (74, t), (76, t), (77, t), (79, 1), (77, 0.5), (76, 0.5),
+           (74, 1), (72, t), (74, t), (76, t), (74, 2),
+           (76, 0.5), (77, 0.5), (79, t), (77, t), (76, t), (74, 1), (72, 1),
+           (71, t), (72, t), (74, t), (72, 1), (67, 2)]
+    lh = [[48, 55, 64], [53, 57, 60], [55, 59, 62], [48, 55, 64]]
+    ev, b = [], 0.0
+    for p, d in mel:
+        ev.append((b, d, p, "piano", 0.5, 0.45))
+        b += d
+    for bar, ch in enumerate(lh):
+        for k in (0, 2):
+            for p in ch:
+                ev.append((bar * 4 + k, 2, p, "piano", 0.5, 0.22))
+    return dict(events=ev, bpm=92, meter=(4, 4), key=(0, "major"), drums=False)
+
+
+def _swing():
+    """F major, 4/4, 132 BPM: a swung quaver tune (played long-short, written
+    straight) over crotchet bass and off-beat chords."""
+    mel = [72, 70, 69, 67, 65, 67, 69, 72, 74, 72, 70, 69, 67, 69, 70, 67,
+           65, 67, 69, 70, 72, 74, 72, 70, 69, 67, 65, 64, 65, 67, 65, 60]
+    ev = [(i * 0.5, 0.5, p, "piano", 0.5, 0.45) for i, p in enumerate(mel)]
+    roots = [41, 46, 48, 41]
+    for bar, r in enumerate(roots):
+        for beat in range(4):
+            ev.append((bar * 4 + beat, 1, r if beat % 2 == 0 else r + 7, "bass", 0.5, 0.45))
+    return dict(events=ev, bpm=132, meter=(4, 4), key=(-1, "major"), drums=False, swing=True)
+
+
 PIECES = {"waltz_F_3-4": _waltz, "flute_Am_6-8": _six_eight, "band_Eb_4-4": _four_four_band,
-          "piano_Dm_4-4": _minor_piano, "sung_waltz_G_3-4": _sung_waltz}
+          "piano_Dm_4-4": _minor_piano, "sung_waltz_G_3-4": _sung_waltz,
+          "triplets_C_4-4": _triplets, "swing_F_4-4": _swing}
+
+
+def _swung(b: float) -> float:
+    """Where a straight-written position is played under swing (2:1)."""
+    k = np.floor(b + 1e-9)
+    f = b - k
+    return k + (2 / 3 if abs(f - 0.5) < 1e-6 else f)
 
 
 def make_piece(name: str, seed: int = 0, lead_in: float = 0.5, repeats: int = 2,
@@ -203,6 +244,8 @@ def make_piece(name: str, seed: int = 0, lead_in: float = 0.5, repeats: int = 2,
     L = np.zeros(n)
     R = np.zeros(n)
     for b, d, p, inst, pan, vel in spec["events"]:
+        if spec.get("swing"):
+            b, d = _swung(b), _swung(b + d) - _swung(b)
         s = int((lead_in + b * beat_s) * SR)
         y = instrument(inst, p, d * beat_s * 0.97, vel, rng)
         e = min(n, s + y.size)
@@ -241,6 +284,6 @@ def make_piece(name: str, seed: int = 0, lead_in: float = 0.5, repeats: int = 2,
     truth.sort()
     return mix.astype(np.float32), dict(notes=truth, bpm=bpm, meter=spec["meter"],
                                         key=spec["key"],
-                                        has_vocals=spec.get("has_vocals", False),
+                                        has_vocals=spec.get("has_vocals", False), swing=spec.get("swing", False),
                                         melody=[(b, d, p) for b, d, p, inst, *_ in spec["events"]
                                                 if inst == "voice"])

@@ -79,11 +79,18 @@ def note_values(ref_beats, qnotes, to_seconds, lead, spb, tol=0.10):
                     short_share_ref=0.0)
     ratio = np.array([est[j][1] / ref[i][1] for i, j in pairs])
     exact = np.abs(ratio - 1.0) < 1e-6
+
+    def is_trip(beats):           # on a third or sixth of a crotchet, not on any binary position
+        return abs(beats * 6 - round(beats * 6)) < 1e-6 and abs(beats * 16 - round(beats * 16)) > 1e-6
+    rt = [is_trip(ref_beats[i][0]) for i, _j in pairs]
+    wt = [(qnotes[j][0] % 30) != 0 for _i, j in pairs]
+    trip = dict(trip_ref=int(sum(rt)), trip_hit=int(sum(a and b for a, b in zip(rt, wt))),
+                trip_false=int(sum(b and not a for a, b in zip(rt, wt))), n_plain=int(sum(not a for a in rt)))
     return dict(value_exact=float(exact.mean()), too_short=float((ratio < 0.75).mean()),
                 too_long=float((ratio > 1.5).mean()),
                 value_F=prf(int(exact.sum()), len(ref), len(est))[2],
                 # how much of the page is semiquavers or shorter, against the score
-                short_share=float(np.mean([d <= 0.25 + 1e-9 for _o, d, _p in est])),
+                **trip, short_share=float(np.mean([d <= 0.25 + 1e-9 for _o, d, _p in est])),
                 short_share_ref=float(np.mean([d <= 0.25 + 1e-9 for _o, d, _p in ref])))
 
 

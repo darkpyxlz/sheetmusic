@@ -104,12 +104,29 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
     grid = level.shortest
     if compound and beat_ticks % grid:
         grid = beat_ticks // 3
-    # ---- 1. snap to the level's grid, merge what lands together
+    # ---- 1. snap to the level's grid, merge what lands together.  Triplets
+    # whose notes are at least the shortest value stay as they are (quaver
+    # triplets at "playable"); shorter ones keep only their on-beat notes.
+    def tunit(t):
+        r = t % beat_ticks
+        if compound or r % 30 == 0:
+            return None
+        return next((beat_ticks // m for m in (3, 6) if (r * m) % beat_ticks == 0), grid)
+
+    def place(t):
+        u = tunit(t)
+        if u is None or u < grid:
+            return int(round(t / grid)) * grid, None
+        return t, u
+
     work: dict[tuple[int, int, int], QNote] = {}
     for q in notes:
         hand = q.hand if q.hand is not None else int(q.pitch >= split)
-        s = int(round(q.start / grid)) * grid
-        e = max(s + grid, int(round(q.end / grid)) * grid)
+        if tunit(q.start) is not None and tunit(q.start) < grid:
+            continue                       # a fast triplet note: the group's on-beat note carries it
+        s, us = place(q.start)
+        e, _ue = place(q.end)
+        e = max(s + (us or grid), e)
         key = (hand, s, q.pitch)
         old = work.get(key)
         if old is None or q.velocity > old.velocity:
@@ -220,7 +237,7 @@ def arrange_piano(notes: list[QNote], level: str | Level = "playable", beat_tick
             n = nxt[q.start]
             if n is not None and q.end < n and n - q.start <= max(legato, q.end - q.start + grid):
                 q.end = n
-            q.end = max(q.end, q.start + grid)
+            q.end = max(q.end, q.start + (tunit(q.start) or grid))
         # when a new onset would exceed the hand's limits together with what is
         # still held, the least important note gives way: a held note is cut
         # short there, a new note is left out (an overtone ghost arriving with

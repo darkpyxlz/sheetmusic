@@ -115,3 +115,47 @@ def test_midi(tmp_path):
     write_midi(str(p), [("Voice", 52, [QNote(0, 480, 60)])], 120)
     data = p.read_bytes()
     assert data[:4] == b"MThd" and data.count(b"MTrk") == 2
+
+
+def _voice_sums(xml):
+    """Every voice of every measure: total duration, triplets counted at 2/3."""
+    from fractions import Fraction
+    durs = {"whole": 1, "half": Fraction(1, 2), "quarter": Fraction(1, 4), "eighth": Fraction(1, 8),
+            "16th": Fraction(1, 16), "32nd": Fraction(1, 32), "64th": Fraction(1, 64)}
+    sums = []
+    for st in ET.fromstring(xml).find("Score").findall("Staff"):
+        for m in st.findall("Measure"):
+            for v in m.findall("voice"):
+                tot, scale, used = Fraction(0), Fraction(1), False
+                for el in v:
+                    if el.tag == "Tuplet":
+                        scale = Fraction(2, 3)
+                    elif el.tag == "endTuplet":
+                        scale = Fraction(1)
+                    elif el.tag in ("Chord", "Rest"):
+                        used = True
+                        dt = el.findtext("durationType")
+                        d = Fraction(1) if dt == "measure" else Fraction(durs[dt])
+                        dots = int(el.findtext("dots") or 0)
+                        tot += scale * d * (2 - Fraction(1, 2 ** dots))
+                if used:
+                    sums.append(tot)
+    return sums
+
+
+def test_triplets_are_written_as_tuplets_and_bars_add_up():
+    # quaver triplet, two semiquaver triplets, a mixed beat, a crotchet
+    notes = [QNote(0, 160, 60), QNote(160, 320, 62), QNote(320, 480, 64),
+             QNote(480, 560, 65), QNote(560, 640, 67), QNote(640, 720, 69), QNote(720, 800, 71),
+             QNote(800, 880, 72), QNote(880, 960, 74),
+             QNote(960, 1120, 76), QNote(1120, 1200, 77), QNote(1200, 1440, 79), QNote(1440, 1920, 72)]
+    xml = score_to_mscx(_score(notes))
+    assert xml.count("<Tuplet>") == 4 and xml.count("<endTuplet/>") == 4
+    assert "<baseNote>eighth</baseNote>" in xml and "<baseNote>16th</baseNote>" in xml
+    assert all(t == 1 for t in _voice_sums(xml))
+
+
+def test_swing_marking():
+    sc = _score([QNote(0, 480, 60)])
+    sc.swing = True
+    assert "<text>Swing</text>" in score_to_mscx(sc)
