@@ -20,6 +20,10 @@ are no models to download and no GPU is needed. A 4-minute song with vocals take
 about 40 s on a laptop CPU, an instrumental one about 80 s (it uses a slower, more
 accurate analysis). Neural source separation (Demucs) is an optional extra.
 
+**Just want a MIDI file?** The [web app](https://darkpyxlz.github.io/sheetmusic/)
+converts an MP3 to MIDI directly in your browser, with nothing to install
+(source in [`web/`](web/)).
+
 How accurate it is on real recordings, measured, is in "Accuracy, honestly" below.
 
 ![example](examples/synthetic_song.png)
