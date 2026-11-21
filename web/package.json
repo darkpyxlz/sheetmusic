@@ -1,0 +1,17 @@
+{
+  "name": "sheetmusic-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Audio to MIDI in the browser (GitHub Pages site)",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node build.mjs && npx --yes http-server dist -p 8080 -c-1"
+  },
+  "dependencies": {
+    "@spotify/basic-pitch": "1.0.1",
+    "@tonejs/midi": "2.0.28"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
