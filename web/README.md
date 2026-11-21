@@ -22,7 +22,8 @@ python3 -m http.server -d dist 8080   # then open http://localhost:8080
 ## Deploy
 
 `.github/workflows/pages.yml` builds `web/` and publishes `web/dist` to GitHub
-Pages on every push to `main` that touches `web/`. One-time setup: in the
+Pages on every push to the default branch (`claude/mp3-to-sheet-music-gvz6gj`,
+or `main` if it is renamed) that touches `web/`. One-time setup: in the
 repository's **Settings → Pages**, set **Source** to **GitHub Actions**.
 
 ## Files
